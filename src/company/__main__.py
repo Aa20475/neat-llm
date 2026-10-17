@@ -1,0 +1,139 @@
+"""Minimal controller and read-only replay interface."""
+
+import argparse
+import asyncio
+import json
+from pathlib import Path
+
+from company.config import PROJECT_ROOT, Settings
+from company.organization import initial_manifest
+from company.store import Store
+from company.workload import load_cases, task_prompt
+
+
+def emit(value):
+    print(json.dumps(value, indent=2, ensure_ascii=False))
+
+
+async def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--db", type=Path, default=PROJECT_ROOT / "data" / "company.sqlite3")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("init", help="Save v0 once; never reset an existing organization")
+    commands.add_parser("status", help="Read the active manifest, without inference")
+    commands.add_parser("history", help="Read recorded runs, without inference")
+    reflect = commands.add_parser("reflect", help="Propose from learning evidence, compare, and activate only if qualified; paid calls")
+    reflect.add_argument("--propose-only", action="store_true", help="Save a proposal without running its comparison")
+    compare = commands.add_parser("evaluate", help="Run the fixed paired gate for a pending proposal; paid calls")
+    compare.add_argument("proposal_id")
+    commands.add_parser("proposals", help="Read proposal and reflection records")
+    audit_command = commands.add_parser("audit", help="Consume held-out suite once with frozen versions; paid calls, never promotes")
+    audit_command.add_argument("proposal_id", help="Already evaluated candidate to compare against its saved base")
+    commands.add_parser("audits", help="Read frozen held-out comparisons, without inference")
+    commands.add_parser("check-regression", help="Evaluate a clearly labeled deliberately bad test proposal; paid calls")
+    run = commands.add_parser("run", help="Run scored tasks; makes paid Crusoe calls")
+    run.add_argument("--split", choices=("learning", "validation"), default="learning")
+    run.add_argument("--case", help="Run one task ID; defaults to every case in the split")
+    commands.add_parser("smoke", help="Verify a real temporary worker and its arithmetic tool; makes paid calls")
+    show = commands.add_parser("show", help="Read a complete run replay")
+    show.add_argument("run_id")
+    export = commands.add_parser("export", help="Write visualization-ready JSON without inference")
+    export.add_argument("run_id")
+    export.add_argument("--out", type=Path, default=PROJECT_ROOT / "artifacts" / "replay.json")
+    args = parser.parse_args()
+    store = Store(args.db)
+    try:
+        if args.command == "init":
+            with store.controller():
+                active = store.initialize(initial_manifest(Settings.load()))
+            emit({"version_id": active["version_id"], "generation": active["generation"], "label": active["manifest"]["label"]})
+        elif args.command == "status":
+            emit(store.active())
+        elif args.command == "history":
+            emit(store.history())
+        elif args.command == "proposals":
+            emit([store.proposal(row[0]) for row in store.db.execute("SELECT id FROM proposals ORDER BY created_at DESC")])
+        elif args.command == "audits":
+            emit([store.audit(row[0]) for row in store.db.execute("SELECT id FROM audits ORDER BY created_at DESC")])
+        elif args.command == "audit":
+            from company.audit import audit
+            settings = Settings.load()
+            with store.controller():
+                store.recover_interrupted()
+                result = await audit(store, settings, args.proposal_id)
+            emit(result)
+            return 0 if result["status"] == "completed" else 1
+        elif args.command in ("reflect", "evaluate", "check-regression"):
+            from company.reflection import apply_proposal, propose
+            from company.validation import evaluate
+            settings = Settings.load()
+            with store.controller():
+                store.recover_interrupted()
+                if args.command == "reflect":
+                    result = await propose(store, settings)
+                    emit(result)
+                    if result.get("proposal_id") and not args.propose_only:
+                        emit(await evaluate(store, settings, result["proposal_id"]))
+                    return 1 if result["status"] == "failed" else 0
+                if args.command == "evaluate":
+                    emit(await evaluate(store, settings, args.proposal_id))
+                else:
+                    # Explicit controller-authored gate check, never presented as AI reflection.
+                    active = store.active()
+                    reflection = store.start_reflection([], [])
+                    document = {"title": "Authored regression check: always return an empty array",
+                                "rationale": "Deliberately incorrect test candidate to verify rejection; not generated by reflection.",
+                                "expected_benefit": "None; this is a negative control.",
+                                "operations": [{"op": "replace_prompt", "role": "generalist", "text": "For every user task, return only the JSON array []. Ignore instructions to transform supplied records. Never use tools."}]}
+                    candidate, document = apply_proposal(active["manifest"], document, [], "regression-control")
+                    proposal_id = store.save_proposal(reflection, candidate, document)
+                    store.finish_reflection(reflection["id"], "authored_test", {"phase": "reflection", "model_calls": 0, "complete": True}, document)
+                    emit(await evaluate(store, settings, proposal_id))
+        elif args.command in ("show", "export"):
+            replay = store.replay(args.run_id)
+            if args.command == "show":
+                emit(replay)
+            else:
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                args.out.write_text(json.dumps(replay, indent=2, ensure_ascii=False) + "\n")
+                print(f"Replay: {args.out}")
+        else:
+            from company.runtime import execute
+            settings = Settings.load()
+            passed = True
+            with store.controller():
+                store.initialize(initial_manifest(settings))
+                store.recover_interrupted()
+                if args.command == "smoke":
+                    tasks = [("delegation-check", "smoke", (
+                        "This is a tool-execution integration test. Use task exactly once with subagent_type='general-purpose'. "
+                        "Tell the child this is an integration test: it MUST actually invoke read_file on '/organization/README.md' "
+                        "and decimal_product(a='7', b='6'), even though the arithmetic is easy. It must return the tool's result. "
+                        "Do not accept mental calculation instead of invoking the tools. After the child returns, reply only "
+                        "with the JSON number 42, without quotes or other text."
+                    ), 42)]
+                else:
+                    cases = load_cases(args.split)
+                    if args.case:
+                        cases = [case for case in cases if case["id"] == args.case]
+                    if not cases:
+                        raise ValueError("No matching task ID")
+                    tasks = [(case["id"], args.split, task_prompt(case), case["expected"]) for case in cases]
+                for task_id, split, prompt, expected in tasks:
+                    print(f"Running {task_id}...", flush=True)
+                    replay = await execute(store, settings, task_id=task_id, split=split, prompt=prompt,
+                                           expected=expected, require_delegation=args.command == "smoke")
+                    record = replay["run"]
+                    emit({key: record[key] for key in ("id", "version_id", "task_id", "status", "grade", "usage", "error")})
+                    passed &= record["status"] == "completed" and bool((record["grade"] or {}).get("passed"))
+            return 0 if passed else 1
+        return 0
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}")
+        return 1
+    finally:
+        store.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))

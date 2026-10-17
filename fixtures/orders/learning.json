@@ -1,0 +1,18 @@
+[
+  {
+    "id": "learn-trim-and-empty",
+    "input": [
+      {"order_id": " b-2 ", "email": " Ada@EXAMPLE.COM ", "items": [{"sku": " pen ", "quantity": "3", "unit_price": "1.25"}]},
+      {"order_id": "a-1", "email": "BOB@example.com", "items": []}
+    ],
+    "expected": [
+      {"order_id": "a-1", "email": "bob@example.com", "items": [], "total": "0.00"},
+      {"order_id": "b-2", "email": "ada@example.com", "items": [{"sku": "PEN", "quantity": 3, "line_total": "3.75"}], "total": "3.75"}
+    ]
+  },
+  {
+    "id": "learn-round-lines-first",
+    "input": [{"order_id": "round-1", "email": " rounding@example.com ", "items": [{"sku": "b", "quantity": 3, "unit_price": "0.335"}, {"sku": "a", "quantity": "1", "unit_price": "2.675"}]}],
+    "expected": [{"order_id": "round-1", "email": "rounding@example.com", "items": [{"sku": "A", "quantity": 1, "line_total": "2.68"}, {"sku": "B", "quantity": 3, "line_total": "1.01"}], "total": "3.69"}]
+  }
+]

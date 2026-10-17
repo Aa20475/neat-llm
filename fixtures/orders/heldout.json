@@ -1,0 +1,12 @@
+[
+  {
+    "id": "heldout-independent-rounding",
+    "input": [{"order_id": " final-a ", "email": "FINAL@Example.COM", "items": [{"sku": "z", "quantity": "1", "unit_price": "1.005"}, {"sku": "y", "quantity": 1, "unit_price": "1.005"}]}],
+    "expected": [{"order_id": "final-a", "email": "final@example.com", "items": [{"sku": "Y", "quantity": 1, "line_total": "1.01"}, {"sku": "Z", "quantity": 1, "line_total": "1.01"}], "total": "2.02"}]
+  },
+  {
+    "id": "heldout-zero-and-ordering",
+    "input": [{"order_id": " 02 ", "email": " B@Example.com ", "items": [{"sku": "free", "quantity": "5", "unit_price": "0"}]}, {"order_id": "001", "email": "A@EXAMPLE.COM", "items": [{"sku": " c ", "quantity": "4", "unit_price": "0.333"}, {"sku": "a", "quantity": 2, "unit_price": "3.335"}]}],
+    "expected": [{"order_id": "001", "email": "a@example.com", "items": [{"sku": "A", "quantity": 2, "line_total": "6.67"}, {"sku": "C", "quantity": 4, "line_total": "1.33"}], "total": "8.00"}, {"order_id": "02", "email": "b@example.com", "items": [{"sku": "FREE", "quantity": 5, "line_total": "0.00"}], "total": "0.00"}]
+  }
+]

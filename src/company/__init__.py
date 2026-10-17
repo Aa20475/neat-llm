@@ -1,0 +1,1 @@
+"""Hackathon agent organization prototype."""

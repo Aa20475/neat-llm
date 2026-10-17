@@ -1,0 +1,12 @@
+[
+  {
+    "id": "validate-leading-zero-quantity",
+    "input": [{"order_id": " v-01 ", "email": " Test@EXAMPLE.COM ", "items": [{"sku": " widget ", "quantity": "02", "unit_price": "10.50"}, {"sku": "fee", "quantity": 1, "unit_price": "0.005"}]}],
+    "expected": [{"order_id": "v-01", "email": "test@example.com", "items": [{"sku": "FEE", "quantity": 1, "line_total": "0.01"}, {"sku": "WIDGET", "quantity": 2, "line_total": "21.00"}], "total": "21.01"}]
+  },
+  {
+    "id": "validate-stable-duplicates",
+    "input": [{"order_id": "2", "email": "Two@example.com", "items": [{"sku": "x", "quantity": 2, "unit_price": "0.10"}, {"sku": " X ", "quantity": "3", "unit_price": "0.20"}]}, {"order_id": "10", "email": "Ten@example.com", "items": []}],
+    "expected": [{"order_id": "10", "email": "ten@example.com", "items": [], "total": "0.00"}, {"order_id": "2", "email": "two@example.com", "items": [{"sku": "X", "quantity": 2, "line_total": "0.20"}, {"sku": "X", "quantity": 3, "line_total": "0.60"}], "total": "0.80"}]
+  }
+]

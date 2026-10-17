@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hackit-company"
+version = "0.1.0"
+description = "Persistent agent organizations with evaluated reflection"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents==0.7.28",
+    "langchain-openai==1.7.2",
+    "python-dotenv==1.2.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+company = ["web/*.html", "web/*.css", "web/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
