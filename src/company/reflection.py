@@ -2,7 +2,6 @@
 
 import asyncio
 from copy import deepcopy
-from dataclasses import replace
 import json
 import re
 import time
@@ -226,7 +225,7 @@ async def propose(store: Store, settings) -> dict:
         rendered = canonical_json(context)
         if len(rendered) > 48000:
             raise ValueError("Reflection context budget exceeded")
-        model = replace(settings, max_tokens=4096).chat_model()
+        model = settings.chat_model()
         messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=rendered)]
         number = store.db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] + 1
         for attempt in range(2):
@@ -245,7 +244,7 @@ async def propose(store: Store, settings) -> dict:
                       "finish_reason": answer.response_metadata.get("finish_reason")}
             attempts.append(record)
             try:
-                require_complete_response(answer, max_tokens=4096)
+                require_complete_response(answer, max_tokens=settings.max_tokens)
                 response = json.loads(raw)
                 if isinstance(response, dict) and set(response) == {"decision"}:
                     response = response["decision"]

@@ -75,7 +75,7 @@ def test_operator_change_preserves_history_and_is_idempotent(tmp_path):
         after = store.remove_budgets()
         assert store.remove_budgets() == after
     assert after["generation"] == 1 and after["version_id"] != before["version_id"]
-    assert after["manifest"]["inference"]["max_tokens"] == 4096
+    assert after["manifest"]["inference"]["max_tokens"] is None
     assert after["manifest"]["limits"]["model_calls"] is None
     assert store.replay(run["id"]) == replay
     assert store.manifest(before["version_id"]) == manifest
@@ -101,3 +101,56 @@ def test_manifest_rejects_malformed_optional_limits(value):
     manifest["limits"]["model_calls"] = value
     with pytest.raises(ValueError, match="limit"):
         validate_manifest(manifest)
+
+
+@pytest.mark.parametrize('raw,expected', [(None, None), ('', None), ('unlimited', None), ('None', None), ('16384', 16384)])
+def test_optional_response_cap_from_environment(monkeypatch, raw, expected):
+    monkeypatch.setattr('company.config.load_dotenv', lambda *args, **kwargs: None)
+    monkeypatch.setenv('CRUSOE_API_KEY', 'test')
+    monkeypatch.setenv('CRUSOE_MODEL', 'test-model')
+    monkeypatch.delenv('CRUSOE_MAX_TOKENS', raising=False)
+    if raw is not None:
+        monkeypatch.setenv('CRUSOE_MAX_TOKENS', raw)
+    settings = Settings.load()
+    assert settings.max_tokens == expected
+    manifest = initial_manifest(settings)
+    assert manifest['inference']['max_tokens'] == expected
+    validate_manifest(manifest)
+
+
+@pytest.mark.parametrize('value', [0, -1, True, 'unlimited', 1.5])
+def test_invalid_response_caps_are_rejected(value):
+    with pytest.raises(ValueError, match='token limit'):
+        Settings(api_key='test', model='test-model', max_tokens=value)
+    manifest = initial_manifest(Settings(api_key='test', model='test-model'))
+    manifest['inference']['max_tokens'] = value
+    with pytest.raises(ValueError, match='token limit'):
+        validate_manifest(manifest)
+
+
+@pytest.mark.parametrize('cap', [None, 16384])
+def test_real_sdk_omits_unset_token_cap_from_wire_request(cap):
+    import httpx
+    from openai import OpenAI
+    from company.responses import require_complete_response
+    requests = []
+    def respond(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        if cap is None:
+            assert not {'max_tokens', 'max_completion_tokens', 'max_output_tokens'} & body.keys()
+        else:
+            assert body['max_completion_tokens'] == cap
+        return httpx.Response(200, json={
+            'id':'mock-response', 'object':'chat.completion', 'created':0, 'model':'test-model',
+            'choices':[{'index':0, 'message':{'role':'assistant','content':'Complete answer'}, 'finish_reason':'stop'}],
+            'usage':{'prompt_tokens':1, 'completion_tokens':9000, 'total_tokens':9001},
+        })
+    settings = Settings(api_key='test-only', model='test-model', max_tokens=cap)
+    with OpenAI(api_key='test-only', base_url=settings.base_url, http_client=httpx.Client(transport=httpx.MockTransport(respond))) as client:
+        model = settings.chat_model()
+        model.client = client.chat.completions
+        answer = model.invoke('Synthetic test: return a complete answer.')
+    assert len(requests) == 1
+    assert answer.usage_metadata['output_tokens'] == 9000
+    require_complete_response(answer, max_tokens=cap)

@@ -25,7 +25,7 @@ async def main() -> int:
     commands.add_parser("workspace-upgrade", help="Enable persistent projects on the active version; preserves history and budgets")
     commands.add_parser("reasoning-upgrade", help="Pin corrected model reasoning settings in a new version; preserves history and budgets")
     unlimit = commands.add_parser("unlimit", help="Remove aggregate run budgets in a new saved version; preserves history")
-    unlimit.add_argument("--max-tokens", type=int, default=4096, help="Output tokens per model response (default: 4096)")
+    unlimit.add_argument("--max-tokens", type=int, default=None, help="Optional output tokens per response; omitted by default so the app sets no cap")
     reflect = commands.add_parser("reflect", help="Propose from learning evidence, compare, and activate only if qualified; paid calls")
     reflect.add_argument("--propose-only", action="store_true", help="Save a proposal without running its comparison")
     compare = commands.add_parser("evaluate", help="Run the fixed paired gate for a pending proposal; paid calls")

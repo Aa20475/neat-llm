@@ -106,7 +106,7 @@ class Store:
             raise ValueError("Organization is not initialized; run `python -m company init`")
         return {"version_id": row["active_version"], "generation": row["generation"], "manifest": self.manifest(row["active_version"])}
 
-    def remove_budgets(self, max_tokens: int = 4096) -> dict:
+    def remove_budgets(self, max_tokens: int | None = None) -> dict:
         """Explicit operator settings change, never a reflection promotion. Caller holds controller lock."""
         with self._lock, self.db:
             self.db.execute("BEGIN IMMEDIATE")
@@ -127,7 +127,7 @@ class Store:
             self.db.execute("INSERT OR IGNORE INTO versions VALUES (?,?,?)", (version_id, now(), canonical_json(manifest)))
             self.db.execute("UPDATE organization SET active_version=?,generation=? WHERE singleton=1", (version_id, generation))
             result = {"from_version": active["version_id"], "to_version": version_id, "generation": generation,
-                      "reason": "User removed aggregate execution budgets", "limits": manifest["limits"], "max_tokens": max_tokens}
+                      "reason": "User removed aggregate execution budgets and updated the response token cap", "limits": manifest["limits"], "max_tokens": max_tokens}
             self.db.execute("INSERT INTO actions VALUES (?,?,?,?,?,?)", (
                 uuid4().hex, now(), "runtime_settings", "completed", canonical_json(result), None))
         return self.active()

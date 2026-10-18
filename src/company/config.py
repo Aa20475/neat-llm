@@ -15,12 +15,14 @@ class Settings:
     api_key: str = field(repr=False)
     model: str
     base_url: str = "https://api.inference.crusoecloud.com/v1"
-    max_tokens: int = 4096
+    max_tokens: int | None = None
     timeout: float = 45
     enable_thinking: bool | None = None
     reasoning_effort: str | None = None
 
     def __post_init__(self):
+        if self.max_tokens is not None and (type(self.max_tokens) is not int or self.max_tokens < 1):
+            raise ValueError("Output token limit must be a positive integer or None")
         # GLM-5.3 always reasons. The disabled-thinking setting mixed reasoning
         # into answer content in a Crusoe probe; enable it and use low effort.
         glm53 = self.model.rsplit("/", 1)[-1].lower().startswith("glm-5.3")
@@ -36,17 +38,18 @@ class Settings:
         model = os.environ.get("CRUSOE_MODEL", "")
         if not api_key or not model:
             raise ValueError("Set CRUSOE_API_KEY and CRUSOE_MODEL in .env or the environment")
+        token_setting = os.environ.get("CRUSOE_MAX_TOKENS", "").strip().lower()
         result = cls(
             api_key=api_key,
             model=model,
             base_url=os.environ.get("CRUSOE_BASE_URL", cls.base_url).rstrip("/"),
-            max_tokens=int(os.environ.get("CRUSOE_MAX_TOKENS", "4096")),
+            max_tokens=None if token_setting in ("", "none", "unlimited") else int(token_setting),
             timeout=float(os.environ.get("CRUSOE_TIMEOUT_SECONDS", "45")),
         )
         if not result.base_url.startswith("https://"):
             raise ValueError("Crusoe inference must use HTTPS")
-        if not 1 <= result.max_tokens <= 8192 or not 0 < result.timeout <= 120:
-            raise ValueError("Invalid token or timeout limit")
+        if not 0 < result.timeout <= 120:
+            raise ValueError("Invalid timeout limit")
         return result
 
     def chat_model(self) -> ChatOpenAI:

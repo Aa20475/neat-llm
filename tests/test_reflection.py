@@ -298,7 +298,10 @@ def test_truncated_reflection_is_rejected_even_with_valid_json(company, monkeypa
             return AIMessage(content='{"decision":{"no_change":true,"reason":"No change"}}',
                              response_metadata={'finish_reason':'length'},
                              usage_metadata={'input_tokens':10,'output_tokens':5,'total_tokens':15})
-    monkeypatch.setattr(Settings, 'chat_model', lambda self: Model())
+    def reflection_model(self):
+        assert self.max_tokens is None  # No hidden reflection-specific token cap.
+        return Model()
+    monkeypatch.setattr(Settings, 'chat_model', reflection_model)
     result = asyncio.run(propose(store, settings))
     assert result['status'] == 'failed'
     assert result['usage']['model_calls'] == 2

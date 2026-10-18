@@ -98,7 +98,10 @@ def validate_manifest(manifest: dict) -> None:
         raise ValueError("Unsupported inference policy")
     if inference.get("reasoning_effort") not in (None, "low", "high", "max"):
         raise ValueError("Unsupported reasoning effort")
-    if not 1 <= inference["max_tokens"] <= 8192 or not 0 < inference["timeout"] <= 120:
+    token_limit = inference["max_tokens"]
+    if token_limit is not None and (type(token_limit) is not int or token_limit < 1):
+        raise ValueError("Invalid output token limit")
+    if not 0 < inference["timeout"] <= 120:
         raise ValueError("Inference limits outside controller policy")
     from company.agent_tools import TOOLS
     from company.project import PROJECT_TOOLS

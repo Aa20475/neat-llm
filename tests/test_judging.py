@@ -53,7 +53,10 @@ def test_independent_review_promotes_only_preferred_candidate(tmp_path, monkeypa
     monkeypatch.setattr("company.judging.execute", execution)
     monkeypatch.setattr("company.judging.secrets.choice", lambda options: options[0])
     monkeypatch.setattr("company.judging.asyncio.sleep", no_wait)
-    monkeypatch.setattr(Settings, "chat_model", lambda self: Judge())
+    def judge_model(self):
+        assert self.max_tokens is None  # No hidden judge-specific token cap.
+        return Judge()
+    monkeypatch.setattr(Settings, "chat_model", judge_model)
     result = asyncio.run(evaluate(store, settings, proposal_id))
     assert result["status"] == ("inconclusive" if finish_reason == "length" else expected_status)
     assert result["evaluation"]["usage"]["model_calls"] == 3
@@ -62,6 +65,7 @@ def test_independent_review_promotes_only_preferred_candidate(tmp_path, monkeypa
     assert store.active()["generation"] == (1 if winner == "B" and finish_reason == "stop" else 0)
     assert store.memories()[0]["evidence"]["review_kind"] == "subjective_llm"
     assert result["evaluation"]["policy"]["objective"] is False
+    assert result["evaluation"]["policy"]["judge_max_tokens"] is None
     store.close()
 
 
