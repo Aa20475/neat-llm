@@ -15,6 +15,20 @@ from company.store import Store
 ASSETS = Path(__file__).with_name("web")
 
 
+def open_reader(db_path: Path) -> Store:
+    """Read records without schema changes or database creation.
+
+    Use the same file-open mode as the writer: mixing ro/rw descriptors with
+    concurrent polling can raise SQLITE_IOERR_LOCK on macOS. SQLite's query_only
+    guard still rejects mutations on this connection.
+    """
+    store = Store.__new__(Store)
+    store.db = sqlite3.connect(db_path.resolve().as_uri() + "?mode=rw", uri=True, timeout=5)
+    store.db.row_factory = sqlite3.Row
+    store.db.execute("PRAGMA query_only=ON")
+    return store
+
+
 def snapshot(store: Store) -> dict:
     tables = {row[0] for row in store.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     versions = [dict(row) for row in store.db.execute("SELECT * FROM versions ORDER BY created_at DESC")]
@@ -94,9 +108,7 @@ def handler_for(db_path: Path):
             try:
                 if path.startswith("/api/"):
                     # The viewer never creates a schema, mutates records, or starts inference.
-                    store = Store.__new__(Store)
-                    store.db = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
-                    store.db.row_factory = sqlite3.Row
+                    store = open_reader(db_path)
                     try:
                         if path == "/api/state":
                             payload = snapshot(store)

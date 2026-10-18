@@ -2,26 +2,47 @@
 
 ## Local branch verification, 2026-10-17 evening
 
-On `jerry-ui-improvments`, real requests were submitted through Chrome at
-`http://127.0.0.1:8765`, before and after stopping and restarting the viewer.
-The new neutral three-dot answering indicator was visible in consecutive
-screenshots, with different dot positions/opacities. It respects reduced motion
-and is removed when a response or failure arrives. The composer stayed visible.
+On `jerry-ui-improvments`, real requests were submitted through the existing
+Chrome tab at `http://127.0.0.1:8765`, with the viewer stopped and restarted after
+configuration and storage changes. The neutral three-dot answering indicator
+was visible during inference and disappeared on completion. It respects reduced
+motion. The composer remained visible.
 
-The current local credential was rejected by Crusoe with HTTP 401. Run
-`9ff58d96dd824994a85cc4129f11fa94` captured the original authentication error;
-after the change, run `f6e0a5721e30465cb3bbb00ec7194e79` displayed the actionable
-error directly in Chat and re-enabled Send. Both used the real provider and
-retained their failure traces. No response was simulated. This verifies the
-loading and failure paths, **not successful inference on this machine**.
-Replace the ignored `.env` credential with a valid Crusoe Intelligence API key
-and restart the viewer before verifying a successful reply.
+An extra trailing period in the ignored local credential caused the earlier
+HTTP 401 failures. Correcting it and restarting the server restored real Crusoe
+inference. Model discovery returned HTTP 200, and a browser request returned
+`87.50` for 12.50 times 7 using `decimal_product`.
 
-The earlier interrupted run had a SQLite disk I/O error. That error did not
-recur in these browser requests; its underlying cause is not established.
-No speculative storage changes were made. The focused runtime, chat, viewer,
-actions, and background suites passed 37 tests; JavaScript syntax and whitespace
-checks also passed. Credentials and local run data are excluded from Git.
+The SQLite failure was reproduced as `SQLITE_IOERR_LOCK` on macOS with concurrent
+`mode=ro` polling connections and read/write chat connections. Viewer reads now
+open the existing file with `mode=rw` and immediately enable `PRAGMA query_only=ON`.
+They still refuse missing databases and reject SQL mutations. The reproduction
+completed 100 writer cycles with polling and no errors after this change. The
+focused runtime, chat, viewer, actions, and background suites pass 39 tests,
+including concurrent readers/writers and the read-only SQL guard.
+
+At the user's request, the server was stopped, local SQLite data cleared, and a
+fresh v0 initialized before the final recording. The real browser session exposed
+a model error: the delegated worker used the wrong mug total, and the first
+follow-up repeated it. A second follow-up explicitly requesting decimal tools
+returned the correct four lines: mugs 59.99, notebooks 8.50, delivery 5.00,
+total 73.49. Run `1a25b8acdcd94aaf9e49c310c8d4c25a` records two
+`decimal_product` calls, one `decimal_sum`, four model calls, and 8.71 seconds.
+The earlier incorrect outputs remain visible in the conversation and saved traces.
+
+Reflection `2c5738afeced428484d208774fbfb5be` completed with `no_change` after
+reviewing three shared learning traces. It used one model call and 3,295 tokens.
+No proposal was promoted; v0 remains active at generation 0. This demonstrates
+working chat, temporary delegation, trace inspection, and manual reflection,
+**not reliable first-answer correctness or learned improvement**.
+
+The demo uses macOS ScreenCaptureKit to record the actual existing Chrome window,
+starting on empty Chat, with real CUA interactions. Music is added afterward.
+The final MP4 is 119.93 seconds, 1920 by 1104 at 30 fps with AAC music.
+The entire file decodes without errors; extracted opening, answer, trace, reflection,
+and closing frames were inspected, and the MP4 opened and played in QuickTime.
+The Chrome tab and address bar are included. Credentials, the local database, raw
+captures, and edited video are ignored by Git.
 
 ## Earlier implementation verification
 

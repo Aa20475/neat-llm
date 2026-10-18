@@ -1,5 +1,8 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+import sqlite3
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -7,7 +10,70 @@ import pytest
 from company.config import Settings
 from company.organization import initial_manifest
 from company.store import Store
-from company.viewer import handler_for, snapshot
+from company.viewer import handler_for, open_reader, snapshot
+
+
+def test_viewer_reader_cannot_mutate_or_create_database(tmp_path):
+    path = tmp_path / "company.sqlite3"
+    with pytest.raises(sqlite3.OperationalError):
+        open_reader(path)
+    assert not path.exists()
+    store = Store(path)
+    store.initialize(initial_manifest(Settings(api_key="test", model="test-model")))
+    store.close()
+    reader = open_reader(path)
+    try:
+        assert snapshot(reader)["active"]
+        for statement in ("CREATE TABLE unexpected (id)", "DELETE FROM organization",
+                          "UPDATE organization SET generation=9"):
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                reader.db.execute(statement)
+    finally:
+        reader.close()
+
+
+def test_polling_readers_do_not_break_chat_writes(tmp_path):
+    path = tmp_path / "company.sqlite3"
+    store = Store(path)
+    store.initialize(initial_manifest(Settings(api_key="test", model="test-model")))
+    store.close()
+    stop = threading.Event()
+    ready = threading.Barrier(4)
+
+    def poll():
+        ready.wait(timeout=5)
+        while not stop.is_set():
+            reader = open_reader(path)
+            try:
+                snapshot(reader)
+            finally:
+                reader.close()
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        readers = [pool.submit(poll) for _ in range(3)]
+        ready.wait(timeout=5)
+        try:
+            for index in range(30):
+                writer = Store(path)
+                try:
+                    turn = writer.start_chat_turn("Concurrent polling")
+                    run = writer.start_run(str(index), "chat", "Concurrent polling")
+                    writer.link_chat_run(turn["id"], run["id"])
+                    writer.start_project(run["id"], "chat", turn["id"])
+                    writer.finish(run["id"], "completed", "Answer", None, {})
+                    writer.finish_chat_turn(turn["id"], "completed")
+                finally:
+                    writer.close()
+        finally:
+            stop.set()
+        for reader in readers:
+            reader.result(timeout=5)
+    reader = open_reader(path)
+    try:
+        assert len(reader.chat_turns()) == 30
+        assert all(turn["status"] == "completed" for turn in reader.chat_turns())
+    finally:
+        reader.close()
 
 
 def test_viewer_reads_complete_history_without_exposing_credentials(tmp_path):
