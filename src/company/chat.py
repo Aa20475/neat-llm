@@ -31,9 +31,12 @@ class ChatService:
         self.busy = threading.Lock()
 
     def submit(self, payload):
-        if not isinstance(payload, dict) or set(payload) - {"message", "thread_id"}:
+        if not isinstance(payload, dict) or set(payload) - {"message", "thread_id", "learn"}:
             raise ValueError("Expected a message and optional conversation ID")
         prompt, thread_id = payload.get("message"), payload.get("thread_id")
+        learn = payload.get("learn", False)
+        if not isinstance(learn, bool):
+            raise ValueError("Use for reflection must be true or false")
         if not isinstance(prompt, str) or not 1 <= len(prompt.strip()) <= 8000:
             raise ValueError("Message must contain 1–8,000 characters")
         if thread_id is not None and (not isinstance(thread_id, str) or len(thread_id) != 32):
@@ -49,12 +52,13 @@ class ChatService:
             controller.__enter__()
             entered = True
             store.recover_interrupted()
-            history = conversation(store, thread_id) if thread_id else []
+            # Opted-in tasks stand alone, so unrelated private chat is not shared with reflection.
+            history = conversation(store, thread_id) if thread_id and not learn else []
             turn = store.start_chat_turn(prompt.strip(), thread_id)
 
             def work():
                 try:
-                    result = run(execute(store, settings, task_id=f"chat-{turn['id'][:8]}", split="chat",
+                    result = run(execute(store, settings, task_id=f"{'task' if learn else 'chat'}-{turn['id'][:8]}", split="learning" if learn else "chat",
                                                  prompt=prompt.strip(), expected=None, ungraded=True, conversation=history,
                                                  chat_turn_id=turn["id"], phase="chat"))
                     store.finish_chat_turn(turn["id"], result["run"]["status"], result["run"]["error"])

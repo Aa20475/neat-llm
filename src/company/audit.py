@@ -32,6 +32,10 @@ def adaptation_usage(store):
         "SELECT usage FROM reflections WHERE usage IS NOT NULL")]
     phases["evaluation"] = [run["usage"] for run in store.history()
                             if (run["usage"] or {}).get("phase") == "evaluation"]
+    for row in store.db.execute("SELECT evaluation FROM proposals WHERE evaluation IS NOT NULL"):
+        judge_usage = (json.loads(row[0]).get("judge") or {}).get("usage")
+        if judge_usage:
+            phases["evaluation"].append(judge_usage)
     return {phase: {**{key: sum(usage.get(key, 0) for usage in rows)
                            for key in ("model_calls", "input_tokens", "output_tokens")},
                     "complete": all(usage.get("complete", False) for usage in rows)}

@@ -22,7 +22,9 @@ def behavior_digest(manifest: dict) -> str:
 
 
 def tool_revision() -> str:
-    return hashlib.sha256(Path(__file__).with_name("agent_tools.py").read_bytes()).hexdigest()
+    sources = ("agent_tools.py", "python_runner.py")
+    return hashlib.sha256(b"".join(name.encode() + b"\0" + Path(__file__).with_name(name).read_bytes()
+                                   for name in sources)).hexdigest()
 
 
 def initial_manifest(settings: Settings) -> dict:
@@ -37,14 +39,15 @@ def initial_manifest(settings: Settings) -> dict:
         "runtime": {name: version(name) for name in ("deepagents", "langchain-openai", "langgraph")},
         "prompts": {"generalist": (
             "You are a capable generalist. Complete the user's task and obey its output format. "
-            "Use the available pure arithmetic tools when useful. You may delegate a bounded "
+            "Use Python to implement and test code or process data when useful; exact decimal tools "
+            "are also available. You may delegate a bounded "
             "subtask to a temporary general-purpose worker when useful; include all necessary "
             "context in its task description. You are responsible for the final answer."
         )},
         "skills": {},
         "task_memory": {},
         "tools": {
-            "names": ["decimal_product", "decimal_sum"], "source_sha256": tool_revision(),
+            "names": ["decimal_product", "decimal_sum", "python_execute"], "source_sha256": tool_revision(),
             "framework": ["read_file", "write_todos", "task"], "filesystem": "ephemeral_state",
         },
         "topology": {

@@ -1,8 +1,10 @@
-"""Small, versioned pure tools. Workers get no host filesystem or shell access."""
+"""Versioned arithmetic and sandboxed Python tools for roots and workers."""
 
 from decimal import Decimal, ROUND_HALF_UP, localcontext
 
 from langchain_core.tools import tool
+
+from company.python_runner import run_python
 
 
 def _decimal(value: str) -> Decimal:
@@ -32,4 +34,20 @@ def decimal_sum(values: list[str]) -> str:
         return format(sum((_decimal(value) for value in values), Decimal(0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), ".2f")
 
 
-TOOLS = {item.name: item for item in (decimal_product, decimal_sum)}
+@tool
+async def python_execute(code: str, files: dict[str, str] | None = None) -> dict:
+    """Write and execute Python code in a fresh, isolated /work/main.py.
+
+    Use for algorithms, data processing, simulations, and running assertions/tests.
+    Optional files maps relative paths to text contents (e.g. data.csv or helper.py).
+    Python standard library only; no pip, network, project files, or credentials.
+    You can read/write /work during execution. Each call starts empty: print any
+    results or file contents you need to keep, then revise/resubmit code to iterate.
+    A final expression is displayed automatically (like a notebook); None is silent.
+    Returns stdout, stderr, exit_code, status, and truncation flags. Limits: 10s
+    wall, 5s CPU, 256 MiB memory, 16 MiB workspace, 4,000 bytes per output stream.
+    """
+    return await run_python(code, files)
+
+
+TOOLS = {item.name: item for item in (decimal_product, decimal_sum, python_execute)}

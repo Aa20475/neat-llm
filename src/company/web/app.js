@@ -16,8 +16,9 @@ async function fetchJSON(path) {const response = await fetch(path); if (!respons
 function renderStats() {
   const scored = state.runs.filter(run => run.grade && ["learning","validation"].includes(run.split));
   const passed = scored.filter(run => run.grade.passed).length;
-  const calls = state.runs.reduce((sum, run) => sum + (run.usage?.model_calls || 0), 0) + state.reflections.reduce((sum, row) => sum + (row.usage?.model_calls || 0), 0);
-  const tokens = state.runs.reduce((sum, run) => sum + (run.usage?.input_tokens || 0) + (run.usage?.output_tokens || 0), 0) + state.reflections.reduce((sum, row) => sum + (row.usage?.input_tokens || 0) + (row.usage?.output_tokens || 0), 0);
+  const judgeUsage = state.proposals.map(row => row.evaluation?.judge?.usage).filter(Boolean);
+  const calls = state.runs.reduce((sum, run) => sum + (run.usage?.model_calls || 0), 0) + state.reflections.reduce((sum, row) => sum + (row.usage?.model_calls || 0), 0) + judgeUsage.reduce((sum, usage) => sum + (usage.model_calls || 0), 0);
+  const tokens = state.runs.reduce((sum, run) => sum + (run.usage?.input_tokens || 0) + (run.usage?.output_tokens || 0), 0) + state.reflections.reduce((sum, row) => sum + (row.usage?.input_tokens || 0) + (row.usage?.output_tokens || 0), 0) + judgeUsage.reduce((sum, usage) => sum + (usage.input_tokens || 0) + (usage.output_tokens || 0), 0);
   const active = state.active;
   $("#stats").innerHTML = [
     ["Active organization", esc(active.manifest.label), `${short(active.version_id)} · generation ${active.generation}`, "mint"],
@@ -29,7 +30,7 @@ function renderStats() {
 }
 function renderRuns() {
   const filter = $("#split-filter").value;
-  $("#filter-help").textContent = {all:"Practice, comparisons, final tests, chat, and plumbing checks.",chat:"Your conversations with the active team. No benchmark score.",learning:"Practice tasks that reflection can inspect to propose improvements.",validation:"Paired checks used to accept or reject a candidate, including reruns of learning tasks.",heldout:"Final tasks opened after configurations were frozen. Excluded from reflection.",smoke:"Plumbing checks: verify delegation, tools, and execution work."}[filter];
+  $("#filter-help").textContent = {all:"Practice, comparisons, final tests, chat, and plumbing checks.",chat:"Your conversations with the active team. No benchmark score.",learning:"Tasks shared with reflection to propose improvements; custom tasks are ungraded.",review:"Fresh answers compared by a separate LLM. Subjective preference, not test scores.",validation:"Paired checks used to accept or reject a candidate, including reruns of learning tasks.",heldout:"Final tasks opened after configurations were frozen. Excluded from reflection.",smoke:"Plumbing checks: verify delegation, tools, and execution work."}[filter];
   const runs = state.runs.filter(run => filter === "all" || run.split === filter);
   $("#run-list").innerHTML = runs.map(run => `<button class="run-item ${run.id === selectedRun ? "selected" : ""}" data-run="${esc(run.id)}"><div class="run-name">${esc(run.task_id)}</div><div class="run-meta">${badge(runStatus(run))}<span>${esc(run.split)}</span></div><div class="run-meta"><span class="mono">${short(run.id)}</span><span>${date(run.started_at)}</span></div></button>`).join("") || empty("No matching runs");
   document.querySelectorAll("[data-run]").forEach(button => button.onclick = () => selectRun(button.dataset.run));
@@ -76,8 +77,19 @@ function renderReflection() {
     let html = `<div class="proposal-body"><h3>${esc(document.title)}</h3><p>${esc(document.rationale)}</p>${badge(proposal.status)} ${proposal.candidate_version === state.active.version_id ? badge("active") : ""}<p class="small muted">${proposal.candidate_version === state.active.version_id ? "This configuration starts new company runs." : `This proposal is not active. New runs use ${esc(state.active.manifest.label)}.`}</p><span class="small muted">${esc(proposal.reason || evaluation?.reason || "Awaiting comparison")}</span><div class="inspect-label">Proposed changes</div>`;
     for (const change of document.changes || []) html += `<div class="small mono">${esc(change.path)}</div><div class="diff-grid"><pre class="diff-before">− ${esc(pretty(change.before))}</pre><pre class="diff-after">+ ${esc(pretty(change.after))}</pre></div>`;
     if (evaluation) {
-      html += `<div class="inspect-label">Paired evaluation · ${esc(evaluation.policy?.name || "fixed gate")}</div><div class="table-wrap"><table><thead><tr><th>Task</th><th>Incumbent</th><th>Candidate</th></tr></thead><tbody>`;
-      for (const pair of evaluation.pairs || []) html += `<tr><td>${esc(pair.task_id)}<p>${esc(pair.split || "validation")}</p></td><td>${badge(pair.base_status !== "completed" ? "inconclusive" : pair.base_passed ? "pass" : "fail")}<p>${num(pair.base_tokens)} tokens</p><button class="text-button" data-result-run="${esc(pair.base_run_id)}">Inspect run ↗</button></td><td>${badge(pair.candidate_status !== "completed" ? "inconclusive" : pair.candidate_passed ? "pass" : "fail")}<p>${num(pair.candidate_tokens)} tokens</p><button class="text-button" data-result-run="${esc(pair.candidate_run_id)}">Inspect run ↗</button></td></tr>`;
+      const subjective = evaluation.policy?.objective === false;
+      html += `<div class="inspect-label">${subjective ? "LLM-reviewed · subjective" : "Paired evaluation"} · ${esc(evaluation.policy?.name || "fixed gate")}</div>`;
+      if(subjective) html += `<p>${esc(evaluation.judge?.reason || "Waiting for the independent reviewer.")}</p>`;
+      html += `<div class="table-wrap"><table><thead><tr><th>Task</th><th>Incumbent</th><th>Candidate</th></tr></thead><tbody>`;
+      for (const pair of evaluation.pairs || []) {
+        const cell = branch => {
+          if(!pair[`${branch}_run_id`]) return "Pending";
+          const status = pair[`${branch}_status`] !== "completed" ? "inconclusive" : subjective ? (pair.preferred === branch ? "preferred" : "ungraded") : pair[`${branch}_passed`] ? "pass" : "fail";
+          const label = subjective && status !== "inconclusive" ? (pair.preferred === branch ? "Judge preferred" : pair.preferred === "tie" ? "Judge: tie" : pair.preferred === "neither" ? "Judge: neither" : "Ungraded answer") : status;
+          return `${badge(status,label)}<p>${num(pair[`${branch}_tokens`])} tokens</p><button class="text-button" data-result-run="${esc(pair[`${branch}_run_id`])}">Inspect run ↗</button>`;
+        };
+        html += `<tr><td>${esc(pair.task_id)}<p>${esc(pair.split || "validation")}</p></td><td>${cell("base")}</td><td>${cell("candidate")}</td></tr>`;
+      }
       html += `</tbody></table></div><div class="inspect-label">Coverage & limits</div><p>${esc(evaluation.note || "Small development suite. Held-out transfer has not been tested.")}</p><details class="details"><summary>Full evaluation record</summary>${pre(evaluation)}</details>`;
     }
     html += `<details class="details"><summary>Proposal record</summary>${pre(document)}</details></div>`; $("#proposal-detail").innerHTML = html;
@@ -102,7 +114,7 @@ function renderAttempts() {
       no_change:row.response?.reason || "No justified change was proposed.",
       failed:row.error || "Reflection failed before producing a usable proposal.",
       interrupted:row.error || "Reflection was interrupted; this attempt remains in history.",
-      proposed:proposal ? `Created a candidate. Current proposal outcome: ${statusLabels[proposal.status] || proposal.status}.` : "Created a candidate for evaluation.",
+      proposed:proposal ? `Created a candidate. Current proposal outcome: ${statusLabels[proposal.status] || proposal.status}.${proposal.document.evaluation_scope === "user-task" ? " Uses a separate LLM reviewer on your task." : ""}` : "Created a candidate for evaluation.",
     }[row.status] || lesson?.lesson || "Inspect the record for this attempt's result.";
     const title = row.response?.title || (row.status === "running" ? "Reflection in progress" : row.status === "failed" ? "Reflection could not complete" : "Reflection result");
     return `<article class="memory-card reflection-attempt" id="attempt-${esc(row.id)}" data-reflection-id="${esc(row.id)}" tabindex="-1"><div class="attempt-meta">${badge(row.status)}${index === 0 ? '<span class="latest-attempt">Latest</span>' : ""}<time datetime="${esc(row.created_at)}">${esc(new Date(row.created_at).toLocaleString())}</time><span class="mono small">${short(row.id)}</span></div><h4>${esc(title)}</h4><p>${esc(explanation)}</p><div class="small muted">${num(row.usage?.model_calls)} model calls · ${num((row.usage?.input_tokens || 0) + (row.usage?.output_tokens || 0))} tokens${row.usage && !row.usage.complete ? " (usage incomplete)" : ""} · ${(row.evidence_ids || []).length} learning traces · ${(row.memory_ids || []).length} prior lessons</div>${linkedProposal ? `<button class="text-button attempt-proposal-link" data-attempt-proposal="${esc(linkedProposal)}">${proposal ? "Inspect proposal" : "Inspect equivalent proposal"} ↗</button>` : ""}<details${openRecords.has(row.id) ? " open" : ""}><summary>Full attempt record</summary>${pre(row)}</details></article>`;
@@ -113,14 +125,15 @@ function renderAttempts() {
 function renderReflectionAction() {
   const action = (state.actions || []).find(row => row.kind === "reflection");
   const running = reflectionSubmitting || action?.status === "running";
-  $("#run-reflection").disabled = running || companyBusy();
+  const hasEvidence = state.runs.some(row => row.split === "learning" && row.status === "completed" && row.version_id === state.active.version_id);
+  $("#run-reflection").disabled = running || companyBusy() || !hasEvidence;
   $("#run-reflection").textContent = running ? "Reflecting…" : "Run reflection ↗";
-  let message = "Runs only when you trigger it. One proposal call; up to 24 comparison calls for a new candidate.";
+  let message = hasEvidence ? "Custom tasks: replay both versions, then let a separate LLM recommend promotion. Subjective review; at most 12 comparison/reviewer calls." : "Send a task in Chat with ‘Use this task for reflection’ checked, then return here.";
   if (running) message = state.proposals.some(row => row.status === "evaluating") ? "Comparing the candidate with the active version…" : "Reviewing learning tasks and prior reflection lessons…";
   else if (action?.status === "completed") {
     const result = action.result || {}, outcome = result.evaluation?.status || result.reflection?.status || "completed";
     const calls = (result.reflection?.usage?.model_calls || 0) + (result.evaluation?.evaluation?.usage?.model_calls || 0);
-    message = `Last cycle: ${statusLabels[outcome] || outcome} · ${calls} model calls. See the proposal and attempt records below.`;
+    message = `Last cycle: ${statusLabels[outcome] || outcome} · ${calls} model calls. ${result.evaluation_note || "See the proposal and attempt records below."}`;
   } else if (action) message = `Last cycle: ${action.status}. ${action.error || "Inspect the recorded attempts for details."}`;
   $("#reflection-action-status").textContent = message;
 }
@@ -139,7 +152,7 @@ function renderVersions() {
 }
 function renderChat() {
   const threads = state.chat_threads || [], turns = state.chat_turns || [];
-  if (selectedThread === undefined) selectedThread = threads[0]?.id || null;
+  if (selectedThread === undefined || (selectedThread && !threads.some(row => row.id === selectedThread))) selectedThread = threads[0]?.id || null;
   const active = state.active;
   $("#chat-active").textContent = `${active.manifest.label} · ${active.manifest.topology.roles.length} saved roles`;
   $("#chat-threads").innerHTML = threads.map(thread => `<button class="proposal-card ${thread.id === selectedThread ? "selected" : ""}" data-thread="${esc(thread.id)}"><h3>${esc(thread.title)}</h3><span class="small muted">${date(thread.created_at)}</span></button>`).join("") || empty("Your first conversation", "Give the active team a task to begin.");
@@ -160,9 +173,10 @@ function renderChat() {
 async function refresh() {
   if (refreshing) return; refreshing = true;
   try {const next = await fetchJSON("/api/state"); const changed = JSON.stringify(state) !== JSON.stringify(next); state = next; $("#error").hidden = true; if(changed) {renderStats(); renderRuns(); renderReflection(); renderVersions(); renderChat();}
+    if (selectedRun && !state.runs.some(row => row.id === selectedRun)) {selectedRun = null; replay = null; selectedWorker = null;}
     if (!selectedRun) selectedRun = state.runs.find(run => run.split === "smoke" && run.grade?.passed)?.id || state.runs[0]?.id;
     if (selectedRun) await selectRun(selectedRun, true);
-    else {$("#graph").innerHTML = empty("Ready for the first run", "Run a task from the company CLI.");}
+    else {$("#graph").innerHTML = empty("Ready for the first run", "Give the generalist a task in Chat."); $("#run-title").textContent = "No runs yet"; $("#download").disabled = true; for (const id of ["saved-roles","run-summary","timeline","inspector"]) $(`#${id}`).innerHTML = "";}
     $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()} · refreshes every 5s`;
   } catch (error) {$("#error").hidden = false; $("#error").textContent = error.message;} finally {refreshing = false;}
 }
@@ -174,7 +188,7 @@ $("#chat-form").onsubmit = async event => {
   if (!message || chatSubmitting || reflectionSubmitting || companyBusy()) return;
   chatSubmitting = true; $("#chat-error").hidden = true; renderChat();
   try {
-    const response = await fetch("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({message, thread_id:selectedThread})});
+    const response = await fetch("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({message, thread_id:selectedThread, learn:$("#chat-learn").checked})});
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || `Could not start chat (${response.status})`);
     selectedThread = result.thread_id; $("#chat-input").value = "";

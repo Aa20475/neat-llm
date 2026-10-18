@@ -10,7 +10,11 @@ Steps 1–4 include Crusoe integration, persistent execution, a local visualizer
 
 [Step 2 verification](docs/STEP2_RESULTS.md): 20 local tests pass, real temporary delegation passes, and restart preserves v0. The first learning run scored 1/2; the sorting failure is retained for reflection.
 
-[Step 3 results](docs/STEP3_RESULTS.md) records the live experiments, their limits, and the adaptation overhead. [Step 4 results](docs/STEP4_RESULTS.md) records the final audit: both branches scored 0/4 executions across two distinct held-out tasks. The full test suite has 50 passing tests.
+[Step 3 results](docs/STEP3_RESULTS.md) records the live experiments, their limits, and the adaptation overhead. [Step 4 results](docs/STEP4_RESULTS.md) records the final audit: both branches scored 0/4 executions across two distinct held-out tasks. Those historical records were archived locally when the workspace was reset to a fresh v0. The full test suite has 73 passing tests.
+
+For interactive experimentation, [LLM-reviewed promotion](docs/LLM_REVIEW.md) replays your task on both versions and lets a separate, blinded LLM call select a preferred answer. This is a subjective prototype gate; it does not establish objective correctness or general improvement.
+
+The generalist and its workers can now [write and execute Python](docs/PYTHON_TOOL.md) for programming, data processing, algorithms, and tests. Code executes in a disposable workspace; attempts and results appear in the run trace and can inform reflection.
 
 ## Open the visualizer
 
@@ -20,9 +24,9 @@ Steps 1–4 include Crusoe integration, persistent execution, a local visualizer
 
 Open **http://127.0.0.1:8765**. Browsing records does not start inference. The UI refreshes every five seconds and supports narrow screens.
 
-- **Chat:** send a task to the active topology. Each message pins the active version when execution starts and links to its actual workers and tool trace. Conversation history persists in SQLite; up to five completed exchanges and 24,000 characters are carried forward. Each message is capped at 8,000 characters and uses the existing execution budget. Enter sends; Shift+Enter adds a line. Chat is ungraded, excluded from reflection evidence, and does not automatically trigger reflection.
+- **Chat:** send a task to the active topology. Each message pins the active version when execution starts and links to its actual workers and tool trace. Check **Use this task for reflection** to share a standalone task and its result as learning evidence. These opted-in tasks start without earlier chat context; ordinary chat carries up to five completed exchanges and 24,000 characters and remains excluded from reflection. Each message is capped at 8,000 characters and uses the existing execution budget. Enter sends; Shift+Enter adds a line. Responses are ungraded and do not automatically trigger reflection.
 - **Run explorer:** inspect tasks, workers, events, outputs, pinned configurations, usage, and downloadable replay JSON. Learning means practice evidence; validation means candidate comparisons; checks verify execution plumbing; held-out means frozen final measurements.
-- **Reflection lab:** attempts appear directly below **Run reflection**, newest first, including duplicates, failures, and no-change results. The sidebar badge counts attempts; the proposal panel separately counts saved candidates. Each attempt shows its outcome, time, usage, full record, and a link to its proposal when available. **Run reflection** explicitly starts the same paid propose/evaluate/activate cycle as the CLI. New candidates are evaluated; duplicates skip evaluation.
+- **Reflection lab:** attempts appear directly below **Run reflection**, newest first, including duplicates, failures, and no-change results. The sidebar badge counts attempts; the proposal panel separately counts saved candidates. Each attempt shows its outcome, time, usage, full record, and a link to its proposal when available. **Run reflection** starts the paid propose/evaluate/activate cycle. For custom tasks, the latest evidence task is replayed on both versions and a separate LLM can recommend promotion. The UI labels these results **LLM-reviewed · subjective**, with the reviewer's reason and answer trace links. Benchmark proposals retain their deterministic gate. Duplicates skip evaluation.
 - **Versions:** inspect immutable configurations, the active pointer, activation/revocation history, and frozen held-out comparisons with links to individual runs.
 
 Chat and reflection use the same controller lock as CLI execution, so paid operations cannot overlap. The server accepts action requests only from its own local origin. API keys stay on the server. Conversation messages and model output render as text, not executable HTML.
@@ -42,6 +46,8 @@ python3 -m venv .venv
 ```
 
 Copy `.env.example` to `.env` only if `.env` does not already exist, then configure the Crusoe key. The environment and credential file are ignored by Git. Installed package versions are pinned in `requirements.lock.txt`; Python 3.14 was used for this setup.
+
+Python execution also requires Linux with unprivileged user namespaces, `bubblewrap` (`bwrap`) and `/usr/bin/python3`. Bubblewrap 0.13.0 is installed on the demo host. There is no fallback to running generated code on the host. See [Python tool setup and limits](docs/PYTHON_TOOL.md).
 
 ```bash
 .venv/bin/python -m company.preflight
@@ -73,7 +79,7 @@ SQLite at `data/company.sqlite3` stores the immutable manifest, active pointer, 
 
 V0 has one persistent generalist role. Its temporary `general-purpose` children share a run-wide budget: 10 model calls, 16 tool calls, at most three workers, one delegation level, and a 150-second cooperative execution timeout. Parent and child requests share a limiter allowing one request every two seconds. Output limits and zero SDK retries come from the saved inference settings. Token usage is measured across root and children; incomplete usage is flagged. Dollar pricing, a hard dollar cap, and a supervisor that forcibly kills a stuck process are not implemented.
 
-The model receives the task specification and input, never the expected output. Pure decimal tools provide exact arithmetic. The SDK's own `read_file` reads a virtual `/organization/` tree containing the pinned prompt and bound skill/memory files. Each temporary child receives a snapshot in its own graph state; retained specialists receive their own role-scoped tree and return only their messages. Filesystem write tools are disabled; there is no project filesystem mount or shell. Seed skills and task memory are empty; bound text entries are also included in the saved prompt. NemoClaw/OpenShell deployment is still optional follow-up work.
+The model receives the task specification and input, never the expected output. Decimal tools provide exact arithmetic; `python_execute` writes and runs code with optional text input files, returning stdout, stderr, and exit status. Each Python invocation gets its own disposable `/work`, standard library, no network, and no repository or credentials. The SDK's own `read_file` separately reads a virtual `/organization/` tree containing the pinned prompt and bound skill/memory files. Each temporary child receives a snapshot in its own graph state; retained specialists receive their own role-scoped tree and return only their messages. Framework filesystem write tools remain disabled. Seed skills and task memory are empty; bound text entries are also included in the saved prompt. NemoClaw/OpenShell deployment is still optional follow-up work.
 
 The replay export contains the saved organization, actual worker tree, model/tool events, objective grade, and usage. The viewer uses these records without model calls. A run marked `completed` can still have `grade.passed: false`.
 
@@ -90,7 +96,7 @@ The replay export contains the saved organization, actual worker tree, model/too
 
 Supported mutations cover prompt replacement, skill revision, task-memory revision, binding approved tools, and retaining an observed temporary worker as an optional specialist. The compiler supports a generalist plus up to two specialists; these are saved role definitions, not long-lived processes. Arbitrary tool code, mandatory workflow scheduling, and provider/budget changes are not proposal capabilities.
 
-The fixed gate runs both versions freshly on two learning regression cases and two validation cases, alternates branch order, and caps the whole comparison at 24 model calls with a 240-second admission deadline. It requires no per-case regressions and either an additional passing case within a 1.5× token ceiling, or identical outcomes with at least 15% fewer execution tokens. A proven regression stops remaining comparisons. Provider errors, partial usage, and budget exhaustion cannot qualify a candidate. This small heuristic is not a statistical guarantee.
+For benchmark proposals, the fixed gate runs both versions freshly on two learning regression cases and two validation cases, alternates branch order, and caps the whole comparison at 24 model calls with a 240-second admission deadline. It requires no per-case regressions and either an additional passing case within a 1.5× token ceiling, or identical outcomes with at least 15% fewer execution tokens. A proven regression stops remaining comparisons. Provider errors, partial usage, and budget exhaustion cannot qualify a candidate. Custom-task proposals instead use the separate LLM reviewer with a 12-call comparison budget. Neither policy is a statistical guarantee.
 
 The controller owns grading and compare-and-swap activation on version plus generation. Evaluation runs never change the active version. Outcomes enter a separate reflection-memory table; ordinary workers cannot read it. Explicit revocation preserves the original experiment and activation and appends the restoration. In-flight runs keep their pinned version. Interrupted evaluations are marked inconclusive after restart.
 

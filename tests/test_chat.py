@@ -95,3 +95,30 @@ def test_recovery_closes_abandoned_chat_and_preserves_completed_reply(tmp_path):
     assert turns[completed["id"]]["status"] == "completed"
     assert turns[completed["id"]]["output"] == "Reply"
     store.close()
+
+
+def test_opted_in_task_is_learning_evidence_without_private_chat_context(tmp_path, monkeypatch):
+    settings = Settings(api_key="test", model="test-model")
+    store = Store(tmp_path / "company.sqlite3")
+    active = store.initialize(initial_manifest(settings))
+    private = store.start_chat_turn("Private earlier chat")
+    row = store.start_run("private", "chat", "Private earlier chat")
+    store.link_chat_run(private["id"], row["id"])
+    store.finish(row["id"], "completed", "Private reply", None, {})
+    store.finish_chat_turn(private["id"], "completed")
+    monkeypatch.setattr(Settings, "load", lambda: settings)
+    async def execution(store, settings, **kwargs):
+        assert kwargs["conversation"] == [] and kwargs["split"] == "learning" and kwargs["ungraded"]
+        row = store.start_run(kwargs["task_id"], kwargs["split"], kwargs["prompt"])
+        store.link_chat_run(kwargs["chat_turn_id"], row["id"])
+        store.finish(row["id"], "completed", "Task answer", None, {})
+        return store.replay(row["id"])
+    monkeypatch.setattr("company.chat.execute", execution)
+    service = ChatService(store.path)
+    service.submit({"message": "A standalone task", "thread_id": private["thread_id"], "learn": True})
+    assert service.busy.acquire(timeout=5)
+    service.busy.release()
+    evidence = learning_evidence(store, active["version_id"])
+    assert len(evidence) == 1 and evidence[0]["task"] == "A standalone task"
+    assert evidence[0]["grade"] is None and "Private" not in str(evidence)
+    store.close()

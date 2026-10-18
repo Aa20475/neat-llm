@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage
 
 from company.config import Settings
 from company.organization import initial_manifest, worker_files
-from company.reflection import apply_proposal, learning_diagnostics, propose
+from company.reflection import apply_proposal, learning_diagnostics, learning_evidence, propose
 from company.runtime import build_agent
 from company.store import Store
 from company.validation import EvaluationBudget, decide, evaluate
@@ -35,6 +35,27 @@ def proposal(store):
 def qualify(store, proposal_id):
     row = store.proposal(proposal_id)
     store.set_evaluation(proposal_id, "qualified", {"decision": "retain", "reason": "unit test evidence", "base_version": row["base_version"], "candidate_version": row["candidate_version"]})
+
+
+def test_reflection_sees_bounded_python_attempts_from_learning_only(company):
+    store, _ = company
+    for split in ("learning", "review"):
+        run = store.start_run(split, split, "Write a parser")
+        for i in range(6):
+            store.event(run["id"], "tool_started", run["id"] + ":root", {
+                "name": "python_execute", "call_id": str(i), "arguments": {"code": "assert False"},
+            })
+            store.event(run["id"], "tool_finished", run["id"] + ":root", {
+                "name": "python_execute", "call_id": str(i), "output": "AssertionError " + "x" * 10000,
+            })
+        store.finish(run["id"], "completed", "My answer", None, {})
+    evidence = learning_evidence(store, store.active()["version_id"])
+    assert len(evidence) == 1 and evidence[0]["task_id"] == "learning"
+    attempts = evidence[0]["python_trace"]
+    assert len(attempts) == 4
+    assert {event["call_id"] for event in attempts} == {"4", "5"}
+    assert all(len(event["excerpt"]) <= 1000 for event in attempts)
+    assert "AssertionError" in attempts[-1]["excerpt"]
 
 
 def test_candidate_isolation_atomic_activation_and_stale_generation(company):

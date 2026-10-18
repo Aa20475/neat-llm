@@ -50,6 +50,9 @@ async def evaluate(store: Store, settings, proposal_id: str, activate: bool = Tr
     proposal = store.proposal(proposal_id)
     if proposal["status"] != "pending":
         raise ValueError("This proposal has already been evaluated; create a new proposal for another attempt")
+    if proposal["document"].get("evaluation_scope") == "user-task":
+        from company.judging import evaluate_with_judge
+        return await evaluate_with_judge(store, settings, proposal_id, activate=activate)
     active = store.active()
     if (active["version_id"], active["generation"]) != (proposal["base_version"], proposal["base_generation"]):
         raise ValueError("Stale proposal; reflect against the current active organization")
