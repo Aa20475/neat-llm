@@ -2,45 +2,49 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Company — Agent observatory</title>
-  <meta name="description" content="Inspect the organization, follow its workers, and see which improvements earned their place.">
+  <title>Neat</title>
+  <meta name="description" content="Chat with your agent team and inspect its work.">
   <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
 </head>
-<body>
-  <aside class="rail">
-    <a class="brand" href="/" aria-label="Company home"><span class="brand-mark">c<span>↗</span></span><span>company<span class="brand-sub">AGENT OBSERVATORY</span></span></a>
-    <div class="rail-label">WORKSPACE</div>
+<body data-current-view="chat">
+  <svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs><symbol id="icon-neat" viewBox="0 0 24 24"><path d="M5 19V5l14 14V5M5 13l14-8M5 19l14-8"/></symbol><symbol id="icon-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/></symbol><symbol id="icon-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol><symbol id="icon-reflect" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></symbol><symbol id="icon-layers" viewBox="0 0 24 24"><path d="m12 3 10 5-10 5L2 8Zm-9 9 9 5 9-5M3 16l9 5 9-5"/></symbol><symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="icon-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></symbol><symbol id="icon-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol><symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol><symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol><symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-2L20 8M4 16l2.3 3A7 7 0 0 0 18 17"/></symbol><symbol id="icon-code" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-14-2 18"/></symbol><symbol id="icon-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Zm0 0v6h6M8 13h8M8 17h5"/></symbol><symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol></defs></svg>
+  <a class="skip-link" href="#workspace">Skip to workspace</a>
+  <aside class="rail" id="sidebar" aria-label="Workspace navigation">
+    <div class="rail-top"><a class="brand" href="/" aria-label="Neat home"><svg class="icon" aria-hidden="true"><use href="#icon-neat"/></svg><span>neat</span></a></div>
+    <button id="new-chat" class="new-chat"><svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg><span>New chat</span></button>
     <nav aria-label="Views">
-      <button class="nav-item" data-view="chat"><span>↗</span> Chat</button>
-      <button class="nav-item selected" data-view="runs"><span>⌘</span> Run explorer <b id="run-count">0</b></button>
-      <button class="nav-item" data-view="reflection"><span>◇</span> Reflection lab <b id="reflection-count">0</b></button>
-      <button class="nav-item" data-view="versions"><span>⧉</span> Versions <b id="version-count">0</b></button>
+      <button class="nav-item selected" data-view="chat" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#icon-chat"/></svg><span>Chat</span></button>
+      <button class="nav-item" data-view="runs"><svg class="icon" aria-hidden="true"><use href="#icon-activity"/></svg><span>Runs</span><b id="run-count">0</b></button>
+      <button class="nav-item" data-view="reflection"><svg class="icon" aria-hidden="true"><use href="#icon-reflect"/></svg><span>Reflection</span><b id="reflection-count">0</b></button>
+      <button class="nav-item" data-view="versions"><svg class="icon" aria-hidden="true"><use href="#icon-layers"/></svg><span>Versions</span><b id="version-count">0</b></button>
     </nav>
-    <div class="rail-note"><span class="live-dot"></span> Connected to local records<p>Every node and result comes from a recorded run.</p></div>
-    <div class="rail-footer">RECURSIVE AGENTS<br><span>Build. Observe. Improve.</span></div>
+    <section class="conversation-history" aria-label="Conversations"><h2 class="history-heading">Conversations</h2><div id="chat-threads"></div></section>
   </aside>
-  <main>
-    <header><div><div class="eyebrow">PERSISTENT AGENT ORGANIZATIONS</div><h1 id="page-title">Watch the work happen.</h1><p id="page-subtitle">A saved organization. Fresh workers. A trace you can inspect.</p></div><div class="header-actions"><span id="connection" class="connection"><i class="live-dot"></i> Live records</span><button id="stop-task" class="button secondary danger" hidden>■ Stop task</button><button id="refresh" class="button secondary">↻ Refresh</button></div></header>
+  <main id="workspace" tabindex="-1">
+    <header class="workspace-header"><div class="header-title"><h1 id="page-title">Chat</h1><span id="page-subtitle" hidden></span></div><div class="header-actions"><button id="stop-task" class="button secondary danger" hidden>■ Stop task</button><button id="refresh" class="icon-button" aria-label="Refresh records" title="Refresh records"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"/></svg></button></div></header>
     <div id="error" class="error" role="alert" hidden></div>
     <section class="stats" aria-label="Organization summary" id="stats"></section>
-    <section id="chat-view" class="view" hidden>
-      <div class="section-heading"><h2>Talk to your company.</h2><span id="chat-active"></span></div>
-      <div class="chat-layout">
-        <section class="panel"><div class="panel-heading"><h3>Conversations</h3><button id="new-chat" class="text-button">+ New</button></div><div id="chat-threads"></div></section>
-        <section class="panel chat-panel">
-          <div class="panel-heading"><h3 id="chat-title">New conversation</h3><button id="delete-chat" class="text-button danger" disabled>Delete conversation</button></div>
-          <p id="chat-notice" class="filter-help" role="status" hidden></p>
-          <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
-          <form id="chat-form" class="chat-composer"><label for="chat-input">Message the active team</label><textarea id="chat-input" maxlength="8000" rows="3" placeholder="Give the company a task…" required></textarea><label class="learning-option"><input type="checkbox" id="chat-learn"> Use this task for reflection</label><div id="chat-error" class="error" role="alert" hidden></div><div class="composer-footer"><span>Uses Crusoe inference · recent conversation is carried forward</span><button id="chat-send" class="button" type="submit">Send ↗</button></div><p>The team can inspect, edit, and run a project whose files persist across calls and follow-up turns. Python variables reset each execution; saved modules can be imported. Private chat and tasks shared for reflection have separate workspaces. Subagent changes need a parent merge. View saved files in Run explorer. Responses are ungraded; reflection remains manual.</p></form>
-        </section>
-      </div>
+    <section id="chat-view" class="view">
+      <section class="chat-panel is-empty" aria-label="Chat">
+        <div class="conversation-heading"><h2 id="chat-title">New conversation</h2><button id="delete-chat" class="text-button danger" disabled>Delete conversation</button></div>
+        <p id="chat-notice" class="filter-help" role="status" hidden></p>
+        <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-relevant="additions text"></div>
+        <div class="composer-area">
+          <form id="chat-form" class="chat-composer">
+            <label for="chat-input" class="sr-only">Message your team</label><textarea id="chat-input" maxlength="8000" rows="2" placeholder="Ask anything. Make something." aria-describedby="composer-hint" required></textarea>
+            <div class="composer-footer"><label class="learning-option" title="Share this task and its response as evidence for a future reflection. Reflection only runs when you start it."><input type="checkbox" id="chat-learn"><svg class="icon" aria-hidden="true"><use href="#icon-reflect"/></svg><span>Use for reflection</span></label><div class="composer-actions"><span id="chat-active" class="model-label"></span><button id="chat-send" class="send-button" type="submit" aria-label="Send message" title="Send message" disabled><svg class="icon" aria-hidden="true"><use href="#icon-arrow"/></svg></button></div></div>
+          </form>
+          <div id="chat-error" class="error" role="alert" hidden></div>
+          <p id="composer-hint" class="composer-hint">Responses are unverified. Reflection is manual. Private and shared tasks use separate workspaces.</p>
+        </div>
+      </section>
     </section>
-    <section id="runs-view" class="view">
-      <div class="section-heading"><h2>Execution explorer</h2><span>Saved roles and workers are separate</span></div>
+    <section id="runs-view" class="view" hidden>
+      <div class="section-heading"><h2>Run explorer</h2><span></span></div>
       <div class="explorer">
         <section class="panel run-list-panel"><div class="panel-heading"><h3>Run history</h3><select id="split-filter" aria-label="Filter runs"><option value="all">All runs</option><option value="chat">Chat</option><option value="learning">Learning</option><option value="validation">Validation</option><option value="review">LLM comparisons</option><option value="heldout">Held-out</option><option value="smoke">Checks</option></select></div><p id="filter-help" class="filter-help"></p><div id="run-list"></div></section>
         <div class="run-main">
-          <section class="panel graph-panel"><div class="panel-heading"><div><span class="eyebrow">PINNED ORGANIZATION</span><h3 id="run-title">Select a run</h3></div><button id="download" class="button secondary" disabled>↓ Replay JSON</button></div><div id="saved-roles" class="saved-roles"></div><div class="graph-label"><span><i class="legend-square"></i> Saved role</span><span><i class="legend-square temporary"></i> Temporary worker</span><span class="muted">Click a worker to inspect</span></div><div id="graph" class="graph"></div><div id="run-summary" class="run-summary"></div></section>
+          <section class="panel graph-panel"><div class="panel-heading"><div><span class="eyebrow">ORGANIZATION</span><h3 id="run-title">Select a run</h3></div><button id="download" class="button secondary" disabled>↓ Replay JSON</button></div><div id="saved-roles" class="saved-roles"></div><div class="graph-label"><span><i class="legend-square"></i> Saved role</span><span><i class="legend-square temporary"></i> Temporary worker</span><span class="muted">Click a worker to inspect</span></div><div id="graph" class="graph"></div><div id="run-summary" class="run-summary"></div></section>
           <section class="panel"><div class="panel-heading"><h3>Project files</h3><select id="project-stage" aria-label="Project snapshot"><option value="final_files">Latest saved files</option><option value="initial_files">Files at run start</option></select></div><div id="project-files"></div><div id="project-content"></div></section>
           <section class="panel"><div class="panel-heading"><h3>Event timeline</h3><button id="clear-worker" class="text-button">All workers</button></div><div id="timeline" class="timeline"></div></section>
         </div>
@@ -48,13 +52,13 @@
       </div>
     </section>
     <section id="reflection-view" class="view" hidden>
-      <div class="section-heading"><h2>Changes must earn their place.</h2><span>Propose → compare → retain or reject</span></div>
-      <section class="panel reflection-action"><div><h3>Start an improvement cycle</h3><p>Review your task and propose a change. A separate LLM compares fresh answers and can promote the candidate. Uses Crusoe inference.</p><p id="reflection-action-status" aria-live="polite">Runs only when you trigger it.</p><button id="view-latest-attempt" class="text-button" hidden>View latest attempt ↓</button><div id="reflection-action-error" class="error" role="alert" hidden></div></div><button id="run-reflection" class="button">Run reflection ↗</button></section>
-      <section class="panel attempts-panel" id="attempts-panel"><div class="panel-heading"><h3>Reflection attempts <span id="attempt-count" class="badge"></span></h3><span class="muted small">Newest first · every attempt is recorded</span></div><div id="reflections" role="region" aria-label="Reflection attempt history" tabindex="0"></div></section>
+      <div class="section-heading"><h2>Reflection</h2><span></span></div>
+      <section class="panel reflection-action"><div><h3>Improve the active team</h3><p>Propose a change, compare fresh answers, and review the result.</p><p id="reflection-action-status" aria-live="polite">Runs only when you trigger it.</p><button id="view-latest-attempt" class="text-button" hidden>View latest attempt ↓</button><div id="reflection-action-error" class="error" role="alert" hidden></div></div><button id="run-reflection" class="button">Run reflection ↗</button></section>
+      <section class="panel attempts-panel" id="attempts-panel"><div class="panel-heading"><h3>Reflection attempts <span id="attempt-count" class="badge"></span></h3><span class="muted small">Newest first</span></div><div id="reflections" role="region" aria-label="Reflection attempt history" tabindex="0"></div></section>
       <div class="reflection-layout"><section class="panel"><div class="panel-heading"><h3>Proposals</h3><span id="proposal-total" class="muted small"></span></div><div id="proposals"></div></section><section class="panel"><div class="panel-heading"><h3>Proposal evidence</h3></div><div id="proposal-detail"></div></section></div>
       <section class="panel memory-panel"><div class="panel-heading"><h3>Reflection memory</h3><span class="muted">What the improvement loop learned</span></div><div id="memory"></div></section>
     </section>
-    <section id="versions-view" class="view" hidden><div class="section-heading"><h2>An organization that survives the run.</h2><span>Immutable configurations · explicit activation</span></div><div id="versions"></div><section class="panel memory-panel"><div class="panel-heading"><h3>Version changes</h3></div><div id="activations"></div></section><section class="panel memory-panel"><div class="panel-heading"><h3>Frozen held-out audit</h3><span class="muted">Final measurement · never a promotion gate</span></div><div id="audits"></div></section></section>
-    <footer>Built on LangChain Deep Agents · Inference on Crusoe <span id="updated">Reading local records…</span></footer>
+    <section id="versions-view" class="view" hidden><div class="section-heading"><h2>Versions</h2><span></span></div><div id="versions"></div><section class="panel memory-panel"><div class="panel-heading"><h3>Version changes</h3></div><div id="activations"></div></section><section class="panel memory-panel"><div class="panel-heading"><h3>Frozen held-out audit</h3><span class="muted">Final measurement · never a promotion gate</span></div><div id="audits"></div></section></section>
+    <span id="updated" hidden></span>
   </main>
 </body></html>

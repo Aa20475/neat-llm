@@ -143,6 +143,29 @@ def test_runtime_records_failure_without_sensitive_exception_text(monkeypatch, s
     assert settings.api_key not in str(result)
 
 
+def test_authentication_failure_is_actionable_and_preserves_redacted_trace(monkeypatch, state):
+    store, settings, _ = state
+
+    class AuthenticationFailure(Exception):
+        status_code = 401
+
+    class Agent:
+        async def ainvoke(self, *args, **kwargs):
+            raise AuthenticationFailure(f"Rejected credential {settings.api_key}")
+
+    monkeypatch.setattr("company.runtime.build_agent", lambda *_: Agent())
+    result = asyncio.run(execute(store, settings, task_id="chat", split="chat", prompt="Hello", expected=None, ungraded=True))
+    assert result["run"]["status"] == "failed"
+    assert "HTTP 401" in result["run"]["error"]
+    assert "CRUSOE_API_KEY" in result["run"]["error"]
+    assert result["run"]["output"] is None
+    assert settings.api_key not in str(result)
+    event = next(event for event in result["events"] if event["kind"] == "run_error")
+    assert event["payload"]["http_status"] == 401
+    assert event["payload"]["error_type"] == "AuthenticationFailure"
+    assert "[REDACTED]" in event["payload"]["detail"]
+
+
 def test_tool_and_configuration_integrity(state):
     _, _, manifest = state
     assert decimal_product.invoke({"a": "3", "b": "0.335"}) == "1.01"

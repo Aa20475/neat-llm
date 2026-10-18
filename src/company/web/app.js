@@ -1,15 +1,17 @@
 "use strict";
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+const icon = name => `<svg class="icon" aria-hidden="true"><use href="#icon-${name}"/></svg>`;
+const thinkingDots = '<span class="thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span>';
 const short = value => String(value || "").slice(0, 8);
 const pretty = value => typeof value === "string" ? value : JSON.stringify(value, null, 2);
 const num = value => Number(value || 0).toLocaleString();
 const statusLabels = {retained:"Promoted",qualified:"Passed · not active",pending:"Proposed",proposed:"Proposal created",no_change:"No change",evaluating:"Evaluating",rejected:"Rejected",revoked:"Promotion revoked",duplicate:"Duplicate · skipped",active:"Active",stale:"Outdated"};
 const badge = (status, text = statusLabels[status] || status) => `<span class="badge ${esc(status)}">${esc(text)}</span>`;
-const date = value => value ? new Date(value).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"}) : "—";
+const date = value => value ? new Date(value).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"}) : "-";
 const empty = (title, text = "") => `<div class="empty"><strong>${esc(title)}</strong>${esc(text)}</div>`;
 const pre = value => `<pre>${esc(pretty(value))}</pre>`;
-let state, replay, selectedRun, selectedWorker = null, selectedProposal, currentView = "runs", refreshing = false, selectedThread, chatSubmitting = false, reflectionSubmitting = false, chatDeleting = false, chatStopping = false, stoppedTurn;
+let state, replay, selectedRun, selectedWorker = null, selectedProposal, currentView = "chat", refreshing = false, selectedThread, chatSubmitting = false, reflectionSubmitting = false, chatDeleting = false, chatStopping = false, stoppedTurn;
 function companyBusy() {return !!state.chat_control?.active_turn_id || state.runs.some(run => run.status === "running") || state.reflections.some(row => row.status === "running") || (state.actions || []).some(row => row.status === "running") || (state.chat_turns || []).some(row => row.status === "running");}
 function runStatus(run) {return run.status === "completed" && run.grade ? (run.grade.passed ? "pass" : "fail") : run.status;}
 function toolOutcome(event) {
@@ -31,10 +33,10 @@ function renderStats() {
   const tokens = state.runs.reduce((sum, run) => sum + (run.usage?.input_tokens || 0) + (run.usage?.output_tokens || 0), 0) + state.reflections.reduce((sum, row) => sum + (row.usage?.input_tokens || 0) + (row.usage?.output_tokens || 0), 0) + judgeUsage.reduce((sum, usage) => sum + (usage.input_tokens || 0) + (usage.output_tokens || 0), 0);
   const active = state.active;
   $("#stats").innerHTML = [
-    ["Active organization", esc(active.manifest.label), `${short(active.version_id)} · generation ${active.generation}`, "mint"],
-    ["Saved roles", active.manifest.topology.roles.length, `${state.runs.length} recorded runs · fresh workers per task`, ""],
-    ["Checked results", `${passed}<span class="muted"> / ${scored.length}</span>`, "All scored attempts · not a before/after score", ""],
-    ["Recorded usage", num(tokens), `${num(calls)} model calls · tokens, not a billing total`, ""]
+    ["Active version", esc(active.manifest.label), `${short(active.version_id)} · generation ${active.generation}`, "mint"],
+    ["Team roles", active.manifest.topology.roles.length, `${state.runs.length} recorded runs`, ""],
+    ["Checked results", `${passed}<span class="muted"> / ${scored.length}</span>`, "Passed / evaluated", ""],
+    ["Tokens used", num(tokens), `${num(calls)} model calls`, ""]
   ].map(([title,value,note,color]) => `<article class="stat"><div class="stat-title">${title}</div><div class="stat-value ${color}">${value}</div><div class="stat-note">${esc(note)}</div></article>`).join("");
   $("#run-count").textContent = state.runs.length; $("#reflection-count").textContent = state.reflections.length; $("#reflection-count").title = `${state.reflections.length} reflection attempts · ${state.proposals.length} proposals`; $("#version-count").textContent = state.versions.length;
 }
@@ -150,8 +152,8 @@ function renderReflectionAction() {
   const running = reflectionSubmitting || action?.status === "running";
   const hasEvidence = state.runs.some(row => row.split === "learning" && row.status === "completed" && !row.reflection_excluded && row.version_id === state.active.version_id);
   $("#run-reflection").disabled = running || companyBusy() || !hasEvidence;
-  $("#run-reflection").textContent = running ? "Reflecting…" : "Run reflection ↗";
-  let message = hasEvidence ? "Custom tasks: replay both versions, then let a separate LLM recommend promotion. Subjective review; no shared model-call or time budget." : "Send a task in Chat with ‘Use this task for reflection’ checked, then return here.";
+  $("#run-reflection").textContent = running ? "Reflecting…" : "Run reflection";
+  let message = hasEvidence ? "A separate model compares fresh answers and may promote the candidate. This is a subjective review." : "Share a completed task using ‘Use for reflection’ in Chat to get started.";
   if (running) message = state.proposals.some(row => row.status === "evaluating") ? "Comparing the candidate with the active version…" : "Reviewing learning tasks and prior reflection lessons…";
   else if (action?.status === "completed") {
     const result = action.result || {}, outcome = result.evaluation?.status || result.reflection?.status || "completed";
@@ -177,7 +179,7 @@ function renderVersions() {
 function chatActivity(turn) {
   const [latest, ...earlier] = turn.activity || [];
   const stopping = state.chat_control?.active_turn_id === turn.id && (state.chat_control?.stopping || chatStopping);
-  return `<div class="chat-activity ${latest?.tone === "error" ? "activity-error" : ""}"><div role="status" aria-live="polite" aria-atomic="true"><div class="activity-heading"><span class="live-dot" aria-hidden="true"></span>${esc(stopping ? "Stopping task…" : latest?.summary || "Starting the team…")}</div><div class="activity-detail">${esc(latest?.worker || "Generalist")}${latest?.detail ? ` · ${esc(latest.detail)}` : ""}</div></div><div class="activity-timing" data-activity-at="${esc(latest?.timestamp || turn.created_at)}" data-task-start="${esc(turn.created_at)}"></div>${earlier.length ? `<ul class="activity-recent">${earlier.reverse().map(event => `<li><time>${date(event.timestamp)}</time><span>${esc(event.worker)} · ${esc(event.summary)}${event.detail ? ` · ${esc(event.detail)}` : ""}</span></li>`).join("")}</ul>` : ""}</div>`;
+  return `<div class="chat-activity ${latest?.tone === "error" ? "activity-error" : ""}"><div role="status" aria-live="polite" aria-atomic="true"><div class="activity-heading">${thinkingDots}${esc(stopping ? "Stopping task…" : latest?.summary || "Starting the team…")}</div><div class="activity-detail">${esc(latest?.worker || "Generalist")}${latest?.detail ? ` · ${esc(latest.detail)}` : ""}</div></div><div class="activity-timing" data-activity-at="${esc(latest?.timestamp || turn.created_at)}" data-task-start="${esc(turn.created_at)}"></div>${earlier.length ? `<ul class="activity-recent">${earlier.reverse().map(event => `<li><time>${date(event.timestamp)}</time><span>${esc(event.worker)} · ${esc(event.summary)}${event.detail ? ` · ${esc(event.detail)}` : ""}</span></li>`).join("")}</ul>` : ""}</div>`;
 }
 function updateActivityTimes() {
   const secondsSince = value => Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000) || 0);
@@ -193,16 +195,25 @@ function renderChat() {
   if (selectedThread === undefined || (selectedThread && !threads.some(row => row.id === selectedThread))) selectedThread = threads[0]?.id || null;
   const active = state.active;
   $("#chat-title").textContent = threads.find(row => row.id === selectedThread)?.title || "New conversation";
-  $("#chat-active").textContent = `${active.manifest.label} · ${active.manifest.inference.model.split("/").pop()} · ${active.manifest.topology.roles.length} saved roles · ${active.manifest.limits.model_calls == null ? "unlimited model calls" : `${active.manifest.limits.model_calls} model calls`}`;
-  $("#chat-threads").innerHTML = threads.map(thread => `<button class="proposal-card ${thread.id === selectedThread ? "selected" : ""}" data-thread="${esc(thread.id)}"><h3>${esc(thread.title)}</h3><span class="small muted">${date(thread.created_at)}</span></button>`).join("") || empty("Your first conversation", "Give the active team a task to begin.");
+  $("#chat-active").textContent = `${active.manifest.inference.model.split("/").pop()} · Active team`;
+  $("#chat-active").title = `${active.manifest.label} · ${active.manifest.topology.roles.length} saved roles · ${active.manifest.limits.model_calls == null ? "unlimited model calls" : `${active.manifest.limits.model_calls} model calls`}`;
+  $("#chat-threads").innerHTML = threads.map(thread => `<button class="proposal-card ${thread.id === selectedThread ? "selected" : ""}" data-thread="${esc(thread.id)}"><h3>${esc(thread.title)}</h3><span class="small muted">${date(thread.created_at)}</span></button>`).join("") || empty("No conversations yet");
   document.querySelectorAll("[data-thread]").forEach(button => button.onclick = () => {selectedThread = button.dataset.thread; renderChat();});
   const messages = $("#chat-messages"), oldTop = messages.scrollTop;
-  const atBottom = messages.scrollHeight - oldTop - messages.clientHeight < 60;
-  messages.innerHTML = turns.filter(turn => turn.thread_id === selectedThread).map(turn => {
+  const threadChanged = messages._thread !== selectedThread;
+  const atBottom = threadChanged || messages.scrollHeight - oldTop - messages.clientHeight < 60;
+  messages._thread = selectedThread;
+  const messagesHTML = turns.filter(turn => turn.thread_id === selectedThread).map(turn => {
     const label = state.versions.find(version => version.id === turn.version_id)?.manifest.label || "Active team";
     const response = turn.status === "running" ? chatActivity(turn) : `<div class="chat-text">${esc(turn.output || turn.error || "No response recorded.")}</div>`;
     return `<article class="chat-message from-user"><div class="chat-message-label">You</div><div class="chat-text">${esc(turn.prompt)}</div></article><article class="chat-message from-team"><div class="chat-message-label">${esc(label)} ${turn.version_id ? `<span class="mono">${short(turn.version_id)}</span>` : ""} ${badge(turn.status, turn.status === "completed" ? "Response returned · unverified" : undefined)}</div>${response}${turn.error && turn.output ? `<p>${esc(turn.error)}</p>` : ""}<div class="chat-meta">${turn.usage ? `${num((turn.usage.input_tokens || 0) + (turn.usage.output_tokens || 0))} tokens · ${num(turn.usage.model_calls)} calls` : ""}${turn.run_id ? `<button class="text-button" data-result-run="${esc(turn.run_id)}">View workers & trace ↗</button>` : ""}</div></article>`;
-  }).join("") || empty("One message. The whole active team.", "Ask for a calculation, give it an order-normalization task, or request a delegated check. Open the trace to see what it actually did.");
+  }).join("") || `<div class="chat-welcome"><div class="welcome-brand">${icon("neat")}<span>neat</span></div><h2>What can we work on?</h2></div>`;
+  // Keep the animation, selection and scroll position intact during unrelated updates.
+  if (messages._renderedHTML !== messagesHTML) {
+    messages.innerHTML = messagesHTML;
+    messages._renderedHTML = messagesHTML;
+  }
+  $(".chat-panel").classList.toggle("is-empty", !turns.some(turn => turn.thread_id === selectedThread));
   messages.scrollTop = atBottom ? messages.scrollHeight : oldTop;
   const busy = companyBusy() || chatSubmitting || reflectionSubmitting || chatDeleting || chatStopping;
   $("#stop-task").hidden = !state.chat_control?.active_turn_id;
@@ -214,7 +225,10 @@ function renderChat() {
     stoppedTurn = null;
   }
   $("#chat-send").disabled = busy;
-  $("#chat-send").textContent = busy ? "Working…" : "Send ↗";
+  const sendHTML = chatSubmitting ? thinkingDots : icon("arrow");
+  if ($("#chat-send").innerHTML !== sendHTML) $("#chat-send").innerHTML = sendHTML;
+  $("#chat-send").setAttribute("aria-label", busy ? "Working…" : "Send message");
+  $("#chat-send").title = busy ? "Working…" : "Send message";
   $("#delete-chat").disabled = !selectedThread || busy;
   $("#delete-chat").textContent = chatDeleting ? "Deleting…" : "Delete conversation";
   $("#delete-chat").title = busy ? "Wait for the current task or reflection to finish" : "Remove this conversation and exclude its tasks from future reflection";
@@ -231,8 +245,8 @@ async function refresh() {
     $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()} · refreshes every 5s`;
   } catch (error) {$("#error").hidden = false; $("#error").textContent = error.message;} finally {refreshing = false;}
 }
-document.querySelectorAll("[data-view]").forEach(button => button.onclick = () => {currentView = button.dataset.view; document.querySelectorAll("[data-view]").forEach(item => item.classList.toggle("selected",item === button)); for (const view of ["chat","runs","reflection","versions"]) $(`#${view}-view`).hidden = view !== currentView; $("#page-title").textContent = {chat:"Put your team to work.",runs:"Watch the work happen.",reflection:"Learning, with receipts.",versions:"Keep what works."}[currentView]; $("#page-subtitle").textContent = {chat:"A conversation with the active organization, backed by real execution.",runs:"A saved organization. Fresh workers. A trace you can inspect.",reflection:"Every proposal has evidence, a comparison, and a decision.",versions:"The exact configuration that starts the next run."}[currentView];});
-$("#new-chat").onclick = () => {selectedThread = null; $("#chat-notice").hidden = true; renderChat(); $("#chat-input").focus();};
+document.querySelectorAll("[data-view]").forEach(button => button.onclick = () => {currentView = button.dataset.view; document.body.dataset.currentView = currentView; document.querySelectorAll("[data-view]").forEach(item => {item.classList.toggle("selected",item === button); if (item === button) item.setAttribute("aria-current", "page"); else item.removeAttribute("aria-current");}); for (const view of ["chat","runs","reflection","versions"]) $(`#${view}-view`).hidden = view !== currentView; $("#page-title").textContent = {chat:"Chat",runs:"Run explorer",reflection:"Reflection",versions:"Versions"}[currentView]; $("#page-subtitle").textContent = {chat:"A conversation with the active organization, backed by real execution.",runs:"A saved organization. Fresh workers. A trace you can inspect.",reflection:"Every proposal has evidence, a comparison, and a decision.",versions:"The exact configuration that starts the next run."}[currentView];});
+$("#new-chat").onclick = () => {$("[data-view='chat']").click(); selectedThread = null; $("#chat-notice").hidden = true; renderChat(); $("#chat-input").focus();};
 $("#stop-task").onclick = async () => {
   const turnId = state.chat_control?.active_turn_id;
   if (!turnId || chatStopping || state.chat_control?.stopping) return;
