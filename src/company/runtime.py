@@ -22,6 +22,7 @@ from company.agent_tools import TOOLS
 from company.config import Settings
 from company.organization import role_prompt, validate_manifest, worker_files
 from company.project import PROJECT_TOOLS, Project, project_tools
+from company.responses import IncompleteResponse, require_complete_response
 from company.store import Store
 from company.workload import grade_output
 
@@ -90,6 +91,9 @@ class RunTrace(BaseCallbackHandler):
         self.failures = {}
         self.executions = {}
         self.stall_reason = None
+        self.response_error = None
+        self.incomplete_workers = set()
+        self.max_tokens = run["manifest"]["inference"]["max_tokens"]
         self.calls = self.completed = self.tool_calls = self.worker_count = 0
         self.input_tokens = self.output_tokens = self.usage_missing = 0
         self.child_tool_calls = 0
@@ -98,17 +102,17 @@ class RunTrace(BaseCallbackHandler):
         self.violation: str | None = None
         self._lock = threading.RLock()
 
-    def clean(self, value):
+    def clean(self, value, limit=12000):
         if isinstance(value, dict):
-            return {str(key): self.clean(item) for key, item in value.items()}
+            return {str(key): self.clean(item, limit) for key, item in value.items()}
         if isinstance(value, (list, tuple)):
-            return [self.clean(item) for item in value]
+            return [self.clean(item, limit) for item in value]
         if value is None or type(value) in (int, float, bool):
             return value
         text = str(value)
         if self.secret:
             text = text.replace(self.secret, "[REDACTED]")
-        return text[:12000]
+        return text[:limit] if limit is not None else text
 
     def link(self, run_id, parent_run_id):
         self.parents[str(run_id)] = str(parent_run_id) if parent_run_id else None
@@ -140,6 +144,8 @@ class RunTrace(BaseCallbackHandler):
                 raise BudgetExceeded(self.violation)
             if self.stall_reason:
                 raise NoProgress(self.stall_reason)
+            if self.response_error:
+                raise IncompleteResponse(self.response_error)
             if self.limits["model_calls"] is not None and self.calls >= self.limits["model_calls"]:
                 self.deny("model_calls")
             if self.budget:
@@ -159,8 +165,19 @@ class RunTrace(BaseCallbackHandler):
                     usage = usage or {}
                     self.input_tokens += usage.get("input_tokens", 0)
                     self.output_tokens += usage.get("output_tokens", 0)
+                    finish_reason = (generation.generation_info or {}).get("finish_reason") or getattr(message, "response_metadata", {}).get("finish_reason")
+                    text = getattr(message, "text", "")
                     self.record("model_finished", self.owner(run_id), call_id=str(run_id), usage=usage,
-                                output=getattr(message, "text", ""), tool_calls=getattr(message, "tool_calls", []))
+                                finish_reason=finish_reason, output=text, output_chars=len(text),
+                                trace_output_truncated=len(text) > 12000, tool_calls=getattr(message, "tool_calls", []))
+                    if message is not None:
+                        try:
+                            require_complete_response(message, max_tokens=self.max_tokens, finish_reason=finish_reason)
+                        except IncompleteResponse as exc:
+                            self.response_error = str(exc)
+                            self.incomplete_workers.add(self.owner(run_id))
+                            self.record("response_incomplete", self.owner(run_id), reason=str(exc), finish_reason=finish_reason)
+                            raise
 
     def on_llm_error(self, error, *, run_id, **kwargs):
         with self._lock:
@@ -173,6 +190,8 @@ class RunTrace(BaseCallbackHandler):
                 raise BudgetExceeded(self.violation)
             if self.stall_reason:
                 raise NoProgress(self.stall_reason)
+            if self.response_error:
+                raise IncompleteResponse(self.response_error)
             if self.limits["tool_calls"] is not None and self.tool_calls >= self.limits["tool_calls"]:
                 self.deny("tool_calls")
             name = serialized.get("name", "unknown")
@@ -239,15 +258,17 @@ class RunTrace(BaseCallbackHandler):
                             self.record("no_progress", self.tool_owners.get(str(run_id), self.root), reason=self.stall_reason, tool=name)
             self.record("tool_finished", self.tool_owners.get(str(run_id), self.root), call_id=str(run_id), name=self.tool_names.get(str(run_id)), output=getattr(output, "content", output))
             if child := self.task_workers.get(str(run_id)):
-                self.store.worker_finish(child, "completed")
-                self.record("worker_finished", child, status="completed")
+                status = "incomplete" if child in self.incomplete_workers else "completed"
+                self.store.worker_finish(child, status)
+                self.record("worker_finished", child, status=status)
 
     def on_tool_error(self, error, *, run_id, **kwargs):
         with self._lock:
             self.record("tool_error", self.tool_owners.get(str(run_id), self.root), call_id=str(run_id), error_type=type(error).__name__)
             if child := self.task_workers.get(str(run_id)):
-                self.store.worker_finish(child, "failed")
-                self.record("worker_finished", child, status="failed")
+                status = "incomplete" if child in self.incomplete_workers or isinstance(error, IncompleteResponse) else "failed"
+                self.store.worker_finish(child, status)
+                self.record("worker_finished", child, status=status)
 
     def usage(self):
         return {"phase": self.phase, "model_calls": self.calls, "completed_calls": self.completed,
@@ -262,7 +283,8 @@ def build_agent(manifest: dict, settings: Settings, project: Project | None = No
     # Do not send the user's credential to a different endpoint stored in a proposal.
     if inference["base_url"] != settings.base_url:
         raise ValueError("Saved provider endpoint differs from configured endpoint")
-    pinned = replace(settings, model=inference["model"], max_tokens=inference["max_tokens"], timeout=inference["timeout"])
+    pinned = replace(settings, model=inference["model"], max_tokens=inference["max_tokens"], timeout=inference["timeout"],
+                     enable_thinking=inference["enable_thinking"], reasoning_effort=inference.get("reasoning_effort"))
     # Shared by parent and children. Pace requests without hidden retry calls.
     model = pinned.chat_model()
     model.rate_limiter = InMemoryRateLimiter(requests_per_second=0.5, check_every_n_seconds=0.1, max_bucket_size=1)
@@ -283,13 +305,17 @@ def build_agent(manifest: dict, settings: Settings, project: Project | None = No
                                  middleware=[FilesystemMiddleware(backend=StateBackend(), tools=["read_file"])])
             try:
                 result = await child.ainvoke({"messages": state["messages"], "files": worker_files(manifest, role["id"])}, config=config)
+                require_complete_response(result["messages"][-1], max_tokens=pinned.max_tokens)
                 branch.status = "completed"
                 summary = result["messages"][-1].text
                 return {"messages": [AIMessage(content=summary + "\n\nWorkspace ID: " + branch.branch_id +
                                                "\nChanged files: " + json.dumps(branch.changed()) +
                                                "\nReview with project_diff and accept files with project_merge.")]}
+            except IncompleteResponse:
+                branch.status = "incomplete"
+                raise
             finally:
-                if branch.status != "completed":
+                if branch.status not in ("completed", "incomplete"):
                     branch.status = "interrupted"
                 branch.persist()
         return {"name": name, "description": description, "runnable": RunnableLambda(invoke)}
@@ -326,6 +352,9 @@ async def execute(store: Store, settings: Settings, *, task_id: str, split: str,
             # repeatedly refuses execution, return an honest incomplete result.
             for attempt in range(3):
                 result = await agent.ainvoke(inputs, config={"callbacks": [trace], "recursion_limit": sys.maxsize})
+                if trace.response_error:
+                    raise IncompleteResponse(trace.response_error)
+                require_complete_response(result["messages"][-1], max_tokens=run["manifest"]["inference"]["max_tokens"])
                 if not needs_execution or trace.python_successes or attempt == 2:
                     return result
                 trace.record("execution_retry", trace.root, attempt=attempt + 1,
@@ -358,6 +387,9 @@ async def execute(store: Store, settings: Settings, *, task_id: str, split: str,
         status, error = "budget_exceeded", str(exc)
     except NoProgress as exc:
         status, error, output = "incomplete", str(exc), str(exc)
+    except IncompleteResponse as exc:
+        status, error, output = "incomplete", str(exc), str(exc)
+        trace.record("run_incomplete", trace.root, reason=str(exc))
     except TimeoutError:
         status, error = "timed_out", "Run exceeded its wall-clock limit"
     except asyncio.CancelledError:
@@ -373,5 +405,5 @@ async def execute(store: Store, settings: Settings, *, task_id: str, split: str,
     finally:
         usage = trace.usage()
         usage["elapsed_seconds"] = round(time.monotonic() - start, 3)
-        store.finish(run["id"], status, trace.clean(output), grade, usage, error)
+        store.finish(run["id"], status, trace.clean(output, limit=None), grade, usage, error)
     return store.replay(run["id"])

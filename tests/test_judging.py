@@ -12,7 +12,8 @@ from company.validation import evaluate
 
 
 @pytest.mark.parametrize("winner,expected_status", [("B", "retained"), ("A", "rejected"), ("tie", "rejected"), ("neither", "rejected"), ("invalid", "inconclusive")])
-def test_independent_review_promotes_only_preferred_candidate(tmp_path, monkeypatch, winner, expected_status):
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+def test_independent_review_promotes_only_preferred_candidate(tmp_path, monkeypatch, winner, expected_status, finish_reason):
     settings = Settings(api_key="secret-judge-key", model="test-model")
     store = Store(tmp_path / "company.sqlite3")
     active = store.initialize(initial_manifest(settings))
@@ -45,6 +46,7 @@ def test_independent_review_promotes_only_preferred_candidate(tmp_path, monkeypa
             assert set(context) == {"task", "answers"} and set(context["answers"]) == {"A", "B"}
             assert "INTERNAL_PROPOSAL_RATIONALE" not in messages[1].content
             return AIMessage(content=json.dumps({"winner": winner, "reason": "The selected answer better satisfies the requested structure."}),
+                             response_metadata={"finish_reason": finish_reason},
                              usage_metadata={"input_tokens": 60, "output_tokens": 25, "total_tokens": 85})
     async def no_wait(*args):
         pass
@@ -53,11 +55,11 @@ def test_independent_review_promotes_only_preferred_candidate(tmp_path, monkeypa
     monkeypatch.setattr("company.judging.asyncio.sleep", no_wait)
     monkeypatch.setattr(Settings, "chat_model", lambda self: Judge())
     result = asyncio.run(evaluate(store, settings, proposal_id))
-    assert result["status"] == expected_status
+    assert result["status"] == ("inconclusive" if finish_reason == "length" else expected_status)
     assert result["evaluation"]["usage"]["model_calls"] == 3
     assert result["evaluation"]["usage"]["input_tokens"] == 260
     assert len(seen) == 2 and all(store.replay(run_id)["run"]["grade"] is None for run_id in seen)
-    assert store.active()["generation"] == (1 if winner == "B" else 0)
+    assert store.active()["generation"] == (1 if winner == "B" and finish_reason == "stop" else 0)
     assert store.memories()[0]["evidence"]["review_kind"] == "subjective_llm"
     assert result["evaluation"]["policy"]["objective"] is False
     store.close()

@@ -18,7 +18,9 @@ Verified against the implementation and local configuration on October 17, 2026,
 | User-task judge | Separate GLM-5.3 call; 700 | A comparison rubric plus the task and randomly labeled A/B final answers. No tools, candidate identity, proposal rationale, or execution trace. | Return JSON choosing A, B, tie, or neither, with a reason. |
 | Controller / benchmark grader | No LLM | Python validation rules, fixture checks, and SQL transactions. | Validate changes, enforce the chosen gate, and update the active version only if its base is still current. |
 
-The execution model is pinned in the version stored in SQL. Reflection and judging read the model from server settings; those settings also currently specify GLM-5.3. All calls request temperature 0 and `enable_thinking=false`; this does not guarantee deterministic answers. Earlier trials used **Nemotron 3 Nano 30B-A3B**. Switching to GLM was an operator change, not a learned improvement.
+The execution model is pinned in the version stored in SQL. Reflection and judging read the model from server settings; those settings also currently specify GLM-5.3. Calls request temperature 0. GLM-5.3 uses `enable_thinking=true` with `reasoning_effort=low` in the chat template settings. The previous false setting mixed reasoning into answer content on Crusoe in a reproduced API check; GLM-5.3 does not support disabling reasoning. These settings do not guarantee deterministic answers. Earlier trials used **Nemotron 3 Nano 30B-A3B**. Model and reasoning configuration changes are operator fixes, not learned improvements.
+
+The harness rejects responses that finish at the token limit, including worker reports and promotion verdicts. Such runs are incomplete; saved files and partial traces remain available. Per-response output limits still apply even when aggregate run budgets are unlimited.
 
 **How to describe our prompting:** Instruction-based tool use for execution; role-specific delegation for workers; schema-constrained reflection; blinded rubric-based comparison for judging. Skills and project memory are text bound to role prompts. We are adapting the agent configuration, not training model weights.
 

@@ -35,7 +35,8 @@ def initial_manifest(settings: Settings) -> dict:
         "inference": {
             "model": settings.model, "base_url": settings.base_url,
             "max_tokens": settings.max_tokens, "timeout": settings.timeout,
-            "temperature": 0, "max_retries": 0, "enable_thinking": False,
+            "temperature": 0, "max_retries": 0, "enable_thinking": settings.enable_thinking,
+            "reasoning_effort": settings.reasoning_effort,
         },
         "runtime": {name: version(name) for name in ("deepagents", "langchain-openai", "langgraph")},
         "prompts": {"generalist": (
@@ -93,8 +94,10 @@ def validate_manifest(manifest: dict) -> None:
     if manifest["tools"].get("filesystem") != "project_snapshot_v1" or manifest["tools"].get("framework") != ["read_file", "write_todos", "task"]:
         raise ValueError("Unsupported framework tool configuration")
     inference = manifest["inference"]
-    if (inference["temperature"], inference["max_retries"], inference["enable_thinking"]) != (0, 0, False):
+    if (inference["temperature"], inference["max_retries"]) != (0, 0) or type(inference["enable_thinking"]) is not bool:
         raise ValueError("Unsupported inference policy")
+    if inference.get("reasoning_effort") not in (None, "low", "high", "max"):
+        raise ValueError("Unsupported reasoning effort")
     if not 1 <= inference["max_tokens"] <= 8192 or not 0 < inference["timeout"] <= 120:
         raise ValueError("Inference limits outside controller policy")
     from company.agent_tools import TOOLS

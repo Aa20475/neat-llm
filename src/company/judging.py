@@ -9,6 +9,7 @@ import time
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from company.organization import canonical_json, digest, validate_manifest
+from company.responses import require_complete_response
 from company.runtime import BudgetExceeded, execute
 from company.validation import EvaluationBudget
 
@@ -100,6 +101,8 @@ async def evaluate_with_judge(store, settings, proposal_id, activate=True):
         report["judge"]["usage"].update(input_tokens=usage.get("input_tokens", 0), output_tokens=usage.get("output_tokens", 0), complete=bool(usage))
         if not usage:
             raise ValueError("Judge usage is incomplete; no promotion")
+        report["judge"]["finish_reason"] = answer.response_metadata.get("finish_reason")
+        require_complete_response(answer, max_tokens=POLICY["judge_max_tokens"])
         raw = answer.text.strip()
         if raw.startswith("```") and raw.endswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()

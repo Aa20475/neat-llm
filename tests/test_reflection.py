@@ -287,3 +287,20 @@ def test_revocation_restores_base_and_preserves_original_evidence(company):
     assert store.proposal(proposal_id)["evaluation"]["decision"] == "retain"
     assert store.db.execute("SELECT COUNT(*) FROM activations").fetchone()[0] == 2
     assert store.memories()[0]["outcome"] == "revoked"
+
+
+def test_truncated_reflection_is_rejected_even_with_valid_json(company, monkeypatch):
+    store, settings = company
+    run = store.start_run('task-user', 'learning', 'Review a task')
+    store.finish(run['id'], 'completed', 'Answer', None, {})
+    class Model:
+        async def ainvoke(self, messages, **kwargs):
+            return AIMessage(content='{"decision":{"no_change":true,"reason":"No change"}}',
+                             response_metadata={'finish_reason':'length'},
+                             usage_metadata={'input_tokens':10,'output_tokens':5,'total_tokens':15})
+    monkeypatch.setattr(Settings, 'chat_model', lambda self: Model())
+    result = asyncio.run(propose(store, settings))
+    assert result['status'] == 'failed'
+    assert result['usage']['model_calls'] == 2
+    assert [memory['outcome'] for memory in store.memories()] == ['failed']
+    assert store.db.execute('SELECT COUNT(*) FROM proposals').fetchone()[0] == 0

@@ -141,6 +141,33 @@ class Store:
             raise ValueError("Stored manifest digest does not match")
         return result
 
+    def upgrade_reasoning_policy(self):
+        """Pin model-specific reasoning settings in a new operator version."""
+        from company.config import Settings
+        with self._lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            for table, status in (("runs", "running"), ("reflections", "running"),
+                                  ("actions", "running"), ("proposals", "evaluating")):
+                if self.db.execute(f"SELECT 1 FROM {table} WHERE status=?", (status,)).fetchone():
+                    raise ValueError("Wait for current work to finish before changing reasoning settings")
+            active = self.active()
+            manifest = deepcopy(active["manifest"])
+            defaults = Settings(api_key="unused", model=manifest["inference"]["model"])
+            policy = {"enable_thinking": defaults.enable_thinking, "reasoning_effort": defaults.reasoning_effort}
+            if all(manifest["inference"].get(key) == value for key, value in policy.items()):
+                return active
+            manifest["inference"].update(policy)
+            manifest["label"] += "-reasoning-fixed"
+            validate_manifest(manifest)
+            version_id, generation = digest(manifest), active["generation"] + 1
+            self.db.execute("INSERT OR IGNORE INTO versions VALUES (?,?,?)", (version_id, now(), canonical_json(manifest)))
+            self.db.execute("UPDATE organization SET active_version=?,generation=? WHERE singleton=1", (version_id, generation))
+            result = {"from_version": active["version_id"], "to_version": version_id, "generation": generation,
+                      "reason": "Operator corrected model reasoning settings; topology and aggregate budgets unchanged", **policy}
+            self.db.execute("INSERT INTO actions VALUES (?,?,?,?,?,?)", (
+                uuid4().hex, now(), "runtime_settings", "completed", canonical_json(result), None))
+        return self.active()
+
     def enable_project_workspace(self):
         """Explicit runtime upgrade; preserve topology, budgets, history and immutable versions."""
         from company.organization import tool_revision

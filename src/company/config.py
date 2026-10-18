@@ -17,6 +17,17 @@ class Settings:
     base_url: str = "https://api.inference.crusoecloud.com/v1"
     max_tokens: int = 4096
     timeout: float = 45
+    enable_thinking: bool | None = None
+    reasoning_effort: str | None = None
+
+    def __post_init__(self):
+        # GLM-5.3 always reasons. The disabled-thinking setting mixed reasoning
+        # into answer content in a Crusoe probe; enable it and use low effort.
+        glm53 = self.model.rsplit("/", 1)[-1].lower().startswith("glm-5.3")
+        if self.enable_thinking is None:
+            object.__setattr__(self, "enable_thinking", glm53)
+        if self.reasoning_effort is None and glm53 and self.enable_thinking:
+            object.__setattr__(self, "reasoning_effort", "low")
 
     @classmethod
     def load(cls) -> "Settings":
@@ -39,6 +50,9 @@ class Settings:
         return result
 
     def chat_model(self) -> ChatOpenAI:
+        template = {"enable_thinking": self.enable_thinking}
+        if self.reasoning_effort:
+            template["reasoning_effort"] = self.reasoning_effort
         return ChatOpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
@@ -49,5 +63,5 @@ class Settings:
             max_retries=0,
             use_responses_api=False,
             tiktoken_model_name="cl100k_base",
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            extra_body={"chat_template_kwargs": template},
         )

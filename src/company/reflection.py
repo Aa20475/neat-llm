@@ -10,6 +10,7 @@ import time
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from company.organization import behavior_digest, canonical_json, digest, validate_manifest
+from company.responses import require_complete_response
 from company.store import Store
 from company.workload import load_cases
 
@@ -244,6 +245,7 @@ async def propose(store: Store, settings) -> dict:
                       "finish_reason": answer.response_metadata.get("finish_reason")}
             attempts.append(record)
             try:
+                require_complete_response(answer, max_tokens=4096)
                 response = json.loads(raw)
                 if isinstance(response, dict) and set(response) == {"decision"}:
                     response = response["decision"]

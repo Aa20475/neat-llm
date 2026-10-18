@@ -18,6 +18,8 @@ For interactive experimentation, [LLM-reviewed promotion](docs/LLM_REVIEW.md) re
 
 The generalist and its workers can [inspect, edit, and execute persistent projects](docs/PYTHON_TOOL.md). Files survive calls and conversation turns; Python processes remain isolated. Workers edit copies, and the parent reviews and merges selected changes. The run viewer shows saved files, and repeated identical coding failures stop with an incomplete result.
 
+GLM-5.3 uses enabled thinking with low reasoning effort. An existing installation using the older disabled-thinking setting can apply `.venv/bin/python -m company reasoning-upgrade` while idle. This creates an operator version and preserves history, topology, and aggregate budgets. The [model documentation](https://docs.z.ai/guides/llm/glm-5.3) explains its always-on reasoning. Provider-truncated replies are recorded as incomplete, including child-worker responses; the trace records finish reasons. Complete final answers are no longer silently clipped to the trace excerpt size.
+
 ## Open the visualizer
 
 ```bash
