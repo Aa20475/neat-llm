@@ -341,6 +341,8 @@ async def execute(store: Store, settings: Settings, *, task_id: str, split: str,
     except Exception as exc:
         status = "budget_exceeded" if trace.violation else "failed"
         error = trace.violation or type(exc).__name__  # Provider exception strings can contain credentials.
+        if not trace.violation and getattr(exc, "status_code", None) == 401:
+            error = "Crusoe rejected the API key (HTTP 401). Update CRUSOE_API_KEY in .env, restart the server, and try again."
         trace.record("run_error", trace.root, error_type=type(exc).__name__,
                      http_status=getattr(exc, "status_code", None), detail=str(exc),
                      retry_after=getattr(getattr(exc, "response", None), "headers", {}).get("retry-after"))

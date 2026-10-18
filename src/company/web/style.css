@@ -202,6 +202,12 @@ body[data-current-view="chat"] .stats { display: none; }
 .chat-message-label { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11px; color: #999; margin-bottom: 12px; }
 .chat-message-label .mono { font-size: 10px; }
 .chat-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; font-size: 14px; }
+.answering { display: inline-flex; align-items: center; gap: 10px; color: #aaa; font-size: 13px; }
+.thinking-dots { display: inline-flex; align-items: center; gap: 4px; height: 20px; }
+.thinking-dots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; animation: thinking 1.4s ease-in-out infinite; }
+.thinking-dots i:nth-child(2) { animation-delay: .16s; }
+.thinking-dots i:nth-child(3) { animation-delay: .32s; }
+@keyframes thinking { 0%, 60%, 100% { opacity: .3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-2px); } }
 .chat-meta { margin-top: 16px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; color: #888; font-size: 10px; }
 .composer-area { width: min(100%,780px); margin: 0 auto; flex-shrink: 0; padding: 16px 0 18px; }
 .chat-composer { background: #242424; border: 1px solid #414141; border-radius: 24px; padding: 17px 18px 13px; transition: border-color .15s; }
@@ -274,7 +280,7 @@ body[data-current-view="chat"] .stats { display: none; }
   .panel-heading select { max-width:130px; }
   .skip-link { left:76px; }
 }
-@media (prefers-reduced-motion:reduce) { button, .chat-composer { transition:none; } }
+@media (prefers-reduced-motion:reduce) { button, .chat-composer { transition:none; } .thinking-dots i { animation:none; opacity:.6; } }
 body:not([data-current-view="chat"]) .conversation-history { display:none; }
 @media (max-width:720px) {
   body { display:flex; flex-direction:column; }

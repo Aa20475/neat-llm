@@ -2,6 +2,7 @@
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#icon-${name}"/></svg>`;
+const thinkingDots = '<span class="thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span>';
 const short = value => String(value || "").slice(0, 8);
 const pretty = value => typeof value === "string" ? value : JSON.stringify(value, null, 2);
 const num = value => Number(value || 0).toLocaleString();
@@ -175,16 +176,24 @@ function renderChat() {
   document.querySelectorAll("[data-thread]").forEach(button => button.onclick = () => {selectedThread = button.dataset.thread; renderChat();});
   const messages = $("#chat-messages"), oldTop = messages.scrollTop;
   const atBottom = messages.scrollHeight - oldTop - messages.clientHeight < 60;
-  messages.innerHTML = turns.filter(turn => turn.thread_id === selectedThread).map(turn => {
+  const messagesHTML = turns.filter(turn => turn.thread_id === selectedThread).map(turn => {
     const label = state.versions.find(version => version.id === turn.version_id)?.manifest.label || "Active team";
-    const response = turn.status === "running" ? "The team is working…" : turn.output || turn.error || "No response recorded.";
-    return `<article class="chat-message from-user"><div class="chat-message-label">You</div><div class="chat-text">${esc(turn.prompt)}</div></article><article class="chat-message from-team"><div class="chat-message-label">${esc(label)} ${turn.version_id ? `<span class="mono">${short(turn.version_id)}</span>` : ""} ${badge(turn.status, turn.status === "completed" ? "Response returned · unverified" : undefined)}</div><div class="chat-text">${esc(response)}</div>${turn.error && turn.output ? `<p>${esc(turn.error)}</p>` : ""}<div class="chat-meta">${turn.usage ? `${num((turn.usage.input_tokens || 0) + (turn.usage.output_tokens || 0))} tokens · ${num(turn.usage.model_calls)} calls` : ""}${turn.run_id ? `<button class="text-button" data-result-run="${esc(turn.run_id)}">View workers & trace ↗</button>` : ""}</div></article>`;
+    const response = turn.status === "running"
+      ? `<span class="answering" role="status">${thinkingDots}<span>Answering</span></span>`
+      : esc(turn.output || turn.error || "No response recorded.");
+    return `<article class="chat-message from-user"><div class="chat-message-label">You</div><div class="chat-text">${esc(turn.prompt)}</div></article><article class="chat-message from-team"><div class="chat-message-label">${esc(label)} ${turn.version_id ? `<span class="mono">${short(turn.version_id)}</span>` : ""} ${badge(turn.status, turn.status === "completed" ? "Response returned · unverified" : undefined)}</div><div class="chat-text">${response}</div>${turn.error && turn.output ? `<p>${esc(turn.error)}</p>` : ""}<div class="chat-meta">${turn.usage ? `${num((turn.usage.input_tokens || 0) + (turn.usage.output_tokens || 0))} tokens · ${num(turn.usage.model_calls)} calls` : ""}${turn.run_id ? `<button class="text-button" data-result-run="${esc(turn.run_id)}">View workers & trace ↗</button>` : ""}</div></article>`;
   }).join("") || `<div class="chat-welcome"><div class="welcome-brand">${icon("neat")}<span>neat</span></div><h2>What can we work on?</h2></div>`;
+  // Keep the animation, selection and scroll position intact during unrelated updates.
+  if (messages._renderedHTML !== messagesHTML) {
+    messages.innerHTML = messagesHTML;
+    messages._renderedHTML = messagesHTML;
+  }
   $(".chat-panel").classList.toggle("is-empty", !turns.some(turn => turn.thread_id === selectedThread));
   messages.scrollTop = atBottom ? messages.scrollHeight : oldTop;
   const busy = companyBusy() || chatSubmitting || reflectionSubmitting || chatDeleting;
   $("#chat-send").disabled = busy;
-  $("#chat-send").innerHTML = icon("arrow");
+  const sendHTML = chatSubmitting ? thinkingDots : icon("arrow");
+  if ($("#chat-send").innerHTML !== sendHTML) $("#chat-send").innerHTML = sendHTML;
   $("#chat-send").setAttribute("aria-label", busy ? "Working…" : "Send message");
   $("#chat-send").title = busy ? "Working…" : "Send message";
   $("#delete-chat").disabled = !selectedThread || busy;
