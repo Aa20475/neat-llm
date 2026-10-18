@@ -169,6 +169,8 @@ def test_delete_conversation_removes_traces_or_preserves_referenced_evidence(tmp
     turn = store.start_chat_turn("Delete this task")
     run = store.start_run("task-delete", "learning", "Delete this task")
     store.link_chat_run(turn["id"], run["id"])
+    store.start_project(run["id"], "learning", turn["id"])
+    store.save_project(run["id"], {"answer.py": "print(42)"}, {})
     store.worker_start(run["id"], "child", run["id"] + ":root", "general-purpose", True, "Bounded check")
     store.finish(run["id"], "completed", "Answer", None, {})
     store.finish_chat_turn(turn["id"], "completed")
@@ -187,11 +189,13 @@ def test_delete_conversation_removes_traces_or_preserves_referenced_evidence(tmp
     assert store.db.execute("SELECT id FROM chat_threads").fetchone()[0] == other["thread_id"]
     assert learning_evidence(store, original["version_id"]) == []
     assert store.active() == original and store.db.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert store.db.execute("SELECT COUNT(*) FROM project_workspaces").fetchone()[0] == 0
     if reference:
         assert store.replay(run["id"])["run"]["output"] == "Answer"
+        assert store.run_project(run["id"])["final_files"] == {"answer.py": "print(42)"}
         assert store.history()[0]["reflection_excluded"] == 1
     else:
-        for table in ("runs", "workers", "events", "learning_exclusions"):
+        for table in ("runs", "workers", "events", "learning_exclusions", "run_projects"):
             assert store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
     with pytest.raises(ValueError, match="Unknown conversation"):
         ChatService(store.path).delete({"thread_id": turn["thread_id"]})

@@ -32,7 +32,10 @@ Supported operations:
 {"op":"retain_role","id":"short-slug","source_worker_id":"an actual temporary worker ID from evidence",
  "description":"when to delegate to this role","text":"role instructions","tools":["python_execute"]}
 Use only listed tools. Do not change models, budgets, filesystem access, evaluator, or controller code.
-Python execution is disposable and stdlib-only. Its observed code/errors can justify reusable debugging,
+Project files persist across calls and shared conversation turns. Python processes are fresh and stdlib-only;
+agents should save modules and tests with project_write, inspect/edit them, and execute saved file paths.
+Subagents edit copies; the parent reviews project_diff and accepts selected files with project_merge.
+Observed code/errors can justify reusable debugging,
 testing, or decomposition skills; tool output and self-written tests are evidence, not independent proof.
 Compare each task's explicit requirements with its observed tool results and independent_checks before deciding.
 An assistant's statement that all tests passed is a claim, not a grade. If a controller-recorded independent
@@ -87,6 +90,7 @@ def learning_evidence(store: Store, base_version: str) -> list[dict]:
                          if event["kind"] in ("tool_started", "tool_finished")
                          and event["payload"].get("name") == "python_execute"][-4:]
         checks = [event for event in replay["events"] if event["kind"] == "independent_check"][-3:]
+        project = replay.get("project")
         evidence.append({"run_id": row["id"], "task_id": row["task_id"], "task": replay["run"]["prompt"][:5000],
                          "output": replay["run"]["output"], "grade": row["grade"], "usage": row["usage"],
                          "diagnostics": learning_diagnostics(row["task_id"], replay["run"]["output"]),
@@ -95,6 +99,7 @@ def learning_evidence(store: Store, base_version: str) -> list[dict]:
                                            "excerpt": canonical_json(event["payload"])[:1000]} for event in python_events],
                          "independent_checks": [{"source": "controller-recorded independent check",
                                                  "excerpt": canonical_json(event["payload"])[:2500]} for event in checks],
+                         "project_files": sorted(project["final_files"]) if project else [],
                          "workers": [{key: worker[key] for key in ("id", "role", "temporary", "task", "status")} for worker in replay["workers"]]})
     return evidence
 

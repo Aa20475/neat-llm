@@ -56,7 +56,7 @@ exec(compile(ast.fix_missing_locations(tree), '/work/main.py', 'exec'), module._
 """
 
 
-def sandbox_command() -> list[str]:
+def sandbox_command(bootstrap: str = BOOTSTRAP) -> list[str]:
     bwrap = shutil.which("bwrap")
     if not bwrap or not Path("/usr/bin/python3").is_file():
         raise RuntimeError("Python execution requires Linux, bubblewrap, and /usr/bin/python3")
@@ -80,7 +80,7 @@ def sandbox_command() -> list[str]:
         "--remount-ro", "/", "--clearenv",
         "--setenv", "PATH", "/usr/bin", "--setenv", "LANG", "C.UTF-8",
         "--setenv", "TMPDIR", "/work",
-        "--", "/usr/bin/python3", "-I", "-S", "-u", "-c", BOOTSTRAP,
+        "--", "/usr/bin/python3", "-I", "-S", "-u", "-c", bootstrap,
     ]
     return command
 

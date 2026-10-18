@@ -41,6 +41,8 @@ async def evaluate_with_judge(store, settings, proposal_id, activate=True):
     if not evidence_ids:
         raise ValueError("No recorded user task to replay")
     source = store.replay(evidence_ids[0])["run"]
+    source_project = store.run_project(source["id"])
+    initial_files = source_project["initial_files"] if source_project else {}
     if source["split"] != "learning" or source["status"] != "completed" or source["version_id"] != proposal["base_version"]:
         raise ValueError("Judge requires a completed learning task from the proposal's base version")
     report = {"policy": POLICY, "base_version": proposal["base_version"], "candidate_version": proposal["candidate_version"],
@@ -72,7 +74,8 @@ async def evaluate_with_judge(store, settings, proposal_id, activate=True):
         for branch in order:
             budget.check()
             result = await execute(store, settings, task_id=source["task_id"], split="review", prompt=source["prompt"],
-                                   expected=None, ungraded=True, version_id=proposal[f"{branch}_version"], budget=budget, phase="evaluation")
+                                   expected=None, ungraded=True, version_id=proposal[f"{branch}_version"], budget=budget,
+                                   phase="evaluation", initial_files=dict(initial_files))
             row = result["run"]
             runs.append(row)
             outputs[branch] = row.get("output")

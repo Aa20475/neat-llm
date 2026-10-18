@@ -77,6 +77,12 @@ class Store:
                 run_id TEXT REFERENCES runs(id), error TEXT);
             CREATE TABLE IF NOT EXISTS learning_exclusions (
                 run_id TEXT PRIMARY KEY REFERENCES runs(id), excluded_at TEXT NOT NULL, reason TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS project_workspaces (
+                id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+                scope TEXT NOT NULL, files TEXT NOT NULL, UNIQUE(thread_id,scope));
+            CREATE TABLE IF NOT EXISTS run_projects (
+                run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+                workspace_id TEXT, initial_files TEXT NOT NULL, final_files TEXT NOT NULL, branches TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS actions (
                 id TEXT PRIMARY KEY, created_at TEXT NOT NULL, kind TEXT NOT NULL,
                 status TEXT NOT NULL, result TEXT, error TEXT);
@@ -134,6 +140,36 @@ class Store:
         if digest(result) != version_id:
             raise ValueError("Stored manifest digest does not match")
         return result
+
+    def enable_project_workspace(self):
+        """Explicit runtime upgrade; preserve topology, budgets, history and immutable versions."""
+        from company.organization import tool_revision
+        from company.project import PROJECT_TOOLS
+        with self._lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            for table, status in (("runs", "running"), ("reflections", "running"), ("proposals", "evaluating")):
+                if self.db.execute(f"SELECT 1 FROM {table} WHERE status=?", (status,)).fetchone():
+                    raise ValueError("Wait for current work to finish before upgrading the workspace")
+            active = self.active()
+            manifest = deepcopy(active["manifest"])
+            manifest["tools"].update(filesystem="project_snapshot_v1", source_sha256=tool_revision())
+            manifest["tools"]["names"] = list(dict.fromkeys([*manifest["tools"]["names"], *PROJECT_TOOLS]))
+            for role in manifest["topology"]["roles"]:
+                if "tools" in role and "python_execute" in role["tools"]:
+                    role["tools"] = list(dict.fromkeys([*role["tools"], *PROJECT_TOOLS]))
+            if manifest == active["manifest"]:
+                return active
+            if not manifest["label"].endswith("-workspace"):
+                manifest["label"] += "-workspace"
+            validate_manifest(manifest)
+            version_id, generation = digest(manifest), active["generation"] + 1
+            self.db.execute("INSERT OR IGNORE INTO versions VALUES (?,?,?)", (version_id, now(), canonical_json(manifest)))
+            self.db.execute("UPDATE organization SET active_version=?,generation=? WHERE singleton=1", (version_id, generation))
+            result = {"from_version": active["version_id"], "to_version": version_id, "generation": generation,
+                      "reason": "User enabled persistent project workspaces and file tools; aggregate budgets unchanged"}
+            self.db.execute("INSERT INTO actions VALUES (?,?,?,?,?,?)", (
+                uuid4().hex, now(), "runtime_settings", "completed", canonical_json(result), None))
+        return self.active()
 
     @contextmanager
     def controller(self):
@@ -223,7 +259,40 @@ class Store:
         run = self._decode(dict(row), ("grade", "usage"))
         workers = [dict(row) for row in self.db.execute("SELECT * FROM workers WHERE run_id=? ORDER BY started_at", (run_id,))]
         events = [self._decode(dict(row), ("payload",)) for row in self.db.execute("SELECT * FROM events WHERE run_id=? ORDER BY seq", (run_id,))]
-        return {"schema_version": 1, "run": run, "organization": self.manifest(run["version_id"]), "workers": workers, "events": events}
+        return {"schema_version": 1, "run": run, "organization": self.manifest(run["version_id"]), "workers": workers,
+                "events": events, "project": self.run_project(run_id)}
+
+    def run_project(self, run_id):
+        row = self.db.execute("SELECT * FROM run_projects WHERE run_id=?", (run_id,)).fetchone()
+        return self._decode(dict(row), ("initial_files", "final_files", "branches")) if row else None
+
+    def start_project(self, run_id, split, chat_turn_id=None, initial_files=None):
+        from company.project_runner import validate_files
+        workspace_id = None
+        files = validate_files(initial_files or {})
+        with self._lock, self.db:
+            if chat_turn_id:
+                if initial_files is not None:
+                    raise ValueError("Chat uses its own project; explicit snapshots are for independent runs")
+                thread = self.db.execute("SELECT thread_id FROM chat_turns WHERE id=?", (chat_turn_id,)).fetchone()
+                if thread is None:
+                    raise ValueError("Unknown chat turn")
+                # Private code never silently becomes learning/evaluation input.
+                workspace_id = thread[0] + ":" + split
+                row = self.db.execute("SELECT files FROM project_workspaces WHERE id=?", (workspace_id,)).fetchone()
+                files = json.loads(row[0]) if row else {}
+                self.db.execute("INSERT OR IGNORE INTO project_workspaces VALUES (?,?,?,?)", (
+                    workspace_id, thread[0], split, canonical_json(files)))
+            self.db.execute("INSERT INTO run_projects VALUES (?,?,?,?,?)", (
+                run_id, workspace_id, canonical_json(files), canonical_json(files), "{}"))
+        return files
+
+    def save_project(self, run_id, files, branches):
+        with self._lock, self.db:
+            self.db.execute("UPDATE run_projects SET final_files=?,branches=? WHERE run_id=?", (
+                canonical_json(files), canonical_json(branches), run_id))
+            self.db.execute("UPDATE project_workspaces SET files=? WHERE id=(SELECT workspace_id FROM run_projects WHERE run_id=?)", (
+                canonical_json(files), run_id))
 
     def save_version(self, manifest: dict) -> str:
         version_id = digest(manifest)

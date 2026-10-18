@@ -45,6 +45,7 @@ async function selectRun(id, preserve = false) {
   if (!preserve || changed) {renderRuns(); renderReplay();}
 }
 function renderReplay() {
+  renderProject();
   const {run,organization,workers,events} = replay;
   $("#run-title").textContent = run.task_id;
   $("#download").disabled = false;
@@ -65,6 +66,18 @@ function renderReplay() {
   const worker = workers.find(item => item.id === selectedWorker);
   $("#inspect-kind").textContent = worker ? "WORKER" : "RUN";
   $("#inspector").innerHTML = worker ? `<div class="inspect-body"><h3 class="inspect-title">${esc(worker.role)}</h3>${badge(worker.status)}<div class="inspect-label">Lifetime</div><p>${worker.temporary ? "Temporary instance. A future reflection may propose retaining its role." : "Fresh instance of a saved role."}</p><div class="inspect-label">Assignment</div>${pre(worker.task)}<div class="inspect-label">Configuration</div><p>Inherited from pinned version ${short(run.version_id)}.</p><details class="details"><summary>Prompt, skills & memory</summary>${pre({prompts:organization.prompts,skills:organization.skills,memory:organization.task_memory})}</details></div>` : `<div class="inspect-body"><h3 class="inspect-title">Task result</h3>${badge(runStatus(run))}<div class="inspect-label">Independent check</div><p>${esc(run.grade?.reason || run.error || (run.status === "completed" ? "Conversational response · ungraded" : "Run is in progress"))}</p><div class="inspect-label">Final output</div>${pre(run.output ?? "No final output recorded.")}<details class="details"><summary>Task instructions</summary>${pre(run.prompt)}</details><details class="details"><summary>Saved configuration</summary>${pre(organization)}</details><div class="inspect-label">Run ID</div><p class="mono">${esc(run.id)}</p></div>`;
+}
+function renderProject() {
+  const files = replay?.project?.[$("#project-stage").value] || {};
+  const names = Object.keys(files).sort();
+  const previous = $("#project-files [aria-pressed='true']")?.dataset.projectPath;
+  $("#project-files").innerHTML = names.map(name => `<button class="text-button" data-project-path="${esc(name)}" aria-pressed="false">${esc(name)}</button>`).join("") || empty("No saved project files", "Project files appear here as the team writes code. Older runs may have no saved workspace.");
+  function select(path) {
+    document.querySelectorAll("[data-project-path]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.projectPath === path)));
+    $("#project-content").innerHTML = `<div class="inspect-body"><span class="mono small">${esc(path)}</span>${pre(files[path].slice(0,100000))}${files[path].length > 100000 ? '<p class="small muted">Preview truncated. Download Replay JSON for the complete file.</p>' : ""}</div>`;
+  }
+  document.querySelectorAll("[data-project-path]").forEach(button => button.onclick = () => select(button.dataset.projectPath));
+  if(names.length) select(names.includes(previous) ? previous : names[0]); else $("#project-content").innerHTML = "";
 }
 function renderReflection() {
   renderReflectionAction();
@@ -181,7 +194,7 @@ async function refresh() {
     if (selectedRun && !state.runs.some(row => row.id === selectedRun)) {selectedRun = null; replay = null; selectedWorker = null;}
     if (!selectedRun) selectedRun = state.runs.find(run => run.split === "smoke" && run.grade?.passed)?.id || state.runs[0]?.id;
     if (selectedRun) await selectRun(selectedRun, true);
-    else {$("#graph").innerHTML = empty("Ready for the first run", "Give the generalist a task in Chat."); $("#run-title").textContent = "No runs yet"; $("#download").disabled = true; for (const id of ["saved-roles","run-summary","timeline","inspector"]) $(`#${id}`).innerHTML = "";}
+    else {$("#graph").innerHTML = empty("Ready for the first run", "Give the generalist a task in Chat."); $("#run-title").textContent = "No runs yet"; $("#download").disabled = true; for (const id of ["saved-roles","run-summary","timeline","inspector","project-files","project-content"]) $(`#${id}`).innerHTML = "";}
     $("#updated").textContent = `Updated ${new Date().toLocaleTimeString()} · refreshes every 5s`;
   } catch (error) {$("#error").hidden = false; $("#error").textContent = error.message;} finally {refreshing = false;}
 }
@@ -232,6 +245,7 @@ $("#run-reflection").onclick = async () => {
 };
 $("#view-latest-attempt").onclick = () => {const latest = $("#reflections .reflection-attempt"); if(latest) {$("#reflections").scrollTop = 0; latest.scrollIntoView({block:"nearest"}); latest.focus({preventScroll:true});}};
 $("#refresh").onclick = refresh; $("#split-filter").onchange = renderRuns;
+$("#project-stage").onchange = renderProject;
 $("#clear-worker").onclick = () => {selectedWorker = null; if(replay) renderReplay();};
 $("#download").onclick = () => {if(!replay) return; const url = URL.createObjectURL(new Blob([JSON.stringify(replay,null,2)],{type:"application/json"})); const a = document.createElement("a"); a.href = url; a.download = `run-${replay.run.id}.json`; a.click(); URL.revokeObjectURL(url);};
 refresh(); setInterval(refresh, 5000);

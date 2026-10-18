@@ -8,3 +8,4 @@
 
 .chat-composer .learning-option{display:flex;align-items:center;gap:8px;margin:13px 0;font-size:12px}.learning-option input{accent-color:var(--mint)}.badge.preferred{color:var(--mint);border-color:#3f6b54}
 .text-button.danger{color:var(--red)}.chat-panel>.panel-heading{gap:14px;flex-wrap:wrap}.chat-panel>.panel-heading h3{overflow-wrap:anywhere;min-width:0;flex:1}#delete-chat{flex-shrink:0}.text-button:disabled{opacity:.5;cursor:not-allowed}#chat-notice{margin:12px 0 0;color:var(--mint)}
+#project-files{display:flex;flex-wrap:wrap;gap:12px;padding:15px;overflow-wrap:anywhere}#project-files button[aria-pressed="true"]{color:var(--mint);text-decoration:underline}#project-content pre{max-height:450px}

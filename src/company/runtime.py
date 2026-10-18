@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import replace
+import hashlib
 import json
 import re
 import sys
@@ -13,13 +14,14 @@ from deepagents.backends import StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain.agents import create_agent
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.rate_limiters import InMemoryRateLimiter
 from langchain_core.runnables import RunnableLambda
 
 from company.agent_tools import TOOLS
 from company.config import Settings
 from company.organization import role_prompt, validate_manifest, worker_files
+from company.project import PROJECT_TOOLS, Project, project_tools
 from company.store import Store
 from company.workload import grade_output
 
@@ -27,8 +29,13 @@ from company.workload import grade_output
 EXECUTION_PROTOCOL = (
     "When asked to implement and execute code, actually call python_execute and inspect its result before answering. "
     "Use native tool calls; JSON or code blocks in an ordinary answer do not call a tool. "
-    "Do not stop at a plan or a promise to begin. Each Python call has fresh files and variables: "
-    "submit a self-contained program and all required inputs, and print the results. "
+    "Do not stop at a plan or a promise to begin. Your /work project files persist across calls and follow-up turns. "
+    "Inspect with project_list, project_read and project_search. Save reusable code with project_write, "
+    "make targeted changes with project_edit, then run saved test files using python_execute(file_path=...). "
+    "Python processes and variables are fresh each call: import saved modules instead of assuming prior variables exist. "
+    "Prefer implementation and test files over repeatedly rewriting a scratch script. Inspect actual failure output before editing. "
+    "Subagents receive copies of your current project. Review their returned workspace ID with project_diff and "
+    "accept selected files with project_merge; their changes are not applied automatically. "
     "Your final answer must distinguish observed execution results from untested claims."
 )
 
@@ -43,6 +50,10 @@ def requests_python_execution(prompt: str) -> bool:
 
 
 class BudgetExceeded(RuntimeError):
+    pass
+
+
+class NoProgress(RuntimeError):
     pass
 
 
@@ -64,6 +75,9 @@ class RunTrace(BaseCallbackHandler):
         self.depths = {self.root: 0}
         self.tool_names: dict[str, str] = {}
         self.tool_owners: dict[str, str] = {}
+        self.tool_arguments = {}
+        self.failures = {}
+        self.stall_reason = None
         self.calls = self.completed = self.tool_calls = self.worker_count = 0
         self.input_tokens = self.output_tokens = self.usage_missing = 0
         self.child_tool_calls = 0
@@ -112,6 +126,8 @@ class RunTrace(BaseCallbackHandler):
             self.link(run_id, parent_run_id)
             if self.violation:
                 raise BudgetExceeded(self.violation)
+            if self.stall_reason:
+                raise NoProgress(self.stall_reason)
             if self.limits["model_calls"] is not None and self.calls >= self.limits["model_calls"]:
                 self.deny("model_calls")
             if self.budget:
@@ -147,12 +163,13 @@ class RunTrace(BaseCallbackHandler):
                 self.deny("tool_calls")
             name = serialized.get("name", "unknown")
             # Explicit allowlist also applies to framework-injected tools.
-            if name not in (*TOOLS, "task", "write_todos", "read_file"):
+            if name not in (*TOOLS, *PROJECT_TOOLS, "task", "write_todos", "read_file"):
                 self.deny("unapproved_tool")
             owner = self.owner(parent_run_id)
             self.tool_names[str(run_id)] = name
             self.tool_owners[str(run_id)] = owner
             arguments = inputs if isinstance(inputs, dict) else {"input": input_str}
+            self.tool_arguments[str(run_id)] = arguments
             if name == "task":
                 if self.limits["workers"] is not None and self.worker_count >= self.limits["workers"]:
                     self.deny("workers")
@@ -179,14 +196,23 @@ class RunTrace(BaseCallbackHandler):
 
     def on_tool_end(self, output, *, run_id, **kwargs):
         with self._lock:
+            value = getattr(output, "content", output)
+            try:
+                value = json.loads(value) if isinstance(value, str) else value
+            except (ValueError, TypeError):
+                value = None
+            name = self.tool_names.get(str(run_id))
+            if name in (*PROJECT_TOOLS, "python_execute") and isinstance(value, dict) and value.get("status") in ("error", "timed_out"):
+                fingerprint = hashlib.sha256(json.dumps({"name": name, "arguments": self.tool_arguments.get(str(run_id)),
+                    "workspace": value.get("workspace_digest"), "error": value.get("error") or value.get("stderr") or value.get("persistence_error")}, sort_keys=True).encode()).hexdigest()
+                key = (self.tool_owners.get(str(run_id)), fingerprint)
+                self.failures[key] = self.failures.get(key, 0) + 1
+                if self.failures[key] >= 3:
+                    self.stall_reason = "Stopped after the same tool failed three times on unchanged project files. Inspect the saved files and error before continuing."
+                    self.record("no_progress", self.tool_owners.get(str(run_id), self.root), reason=self.stall_reason, tool=name)
             if self.tool_names.get(str(run_id)) == "python_execute":
-                value = getattr(output, "content", output)
-                try:
-                    value = json.loads(value) if isinstance(value, str) else value
-                    if isinstance(value, dict) and value.get("status") == "ok":
-                        self.python_successes += 1
-                except (ValueError, TypeError):
-                    pass
+                if isinstance(value, dict) and value.get("status") == "ok":
+                    self.python_successes += 1
             self.record("tool_finished", self.tool_owners.get(str(run_id), self.root), call_id=str(run_id), name=self.tool_names.get(str(run_id)), output=getattr(output, "content", output))
             if child := self.task_workers.get(str(run_id)):
                 self.store.worker_finish(child, "completed")
@@ -206,7 +232,7 @@ class RunTrace(BaseCallbackHandler):
                 "complete": self.completed == self.calls and self.usage_missing == 0}
 
 
-def build_agent(manifest: dict, settings: Settings):
+def build_agent(manifest: dict, settings: Settings, project: Project | None = None):
     validate_manifest(manifest)
     inference = manifest["inference"]
     # Do not send the user's credential to a different endpoint stored in a proposal.
@@ -216,26 +242,35 @@ def build_agent(manifest: dict, settings: Settings):
     # Shared by parent and children. Pace requests without hidden retry calls.
     model = pinned.chat_model()
     model.rate_limiter = InMemoryRateLimiter(requests_per_second=0.5, check_every_n_seconds=0.1, max_bucket_size=1)
+    project = project or Project()
     root_role = manifest["topology"]["roles"][0]
-    tools = [TOOLS[name] for name in root_role.get("tools", manifest["tools"]["names"])]
+    def bound_tools(role, workspace):
+        registry = {**TOOLS, **project_tools(workspace)}
+        return [registry[name] for name in role.get("tools", manifest["tools"]["names"])]
+    tools = bound_tools(root_role, project)
     backend = StateBackend()
     prompt = role_prompt(manifest) + "\n\n" + EXECUTION_PROTOCOL + "\nYour saved configuration is available under /organization/; read /organization/README.md for the file index if needed."
-    subagents = [{
-            "name": "general-purpose", "description": "A temporary generalist for a bounded subtask; include the necessary input and instructions.",
-            "system_prompt": prompt, "model": model, "tools": tools,
-            "middleware": [FilesystemMiddleware(backend=backend, tools=["read_file"])],
-        }]
-    def compile_specialist(role):
-        # A compiled child stages its own role tree and returns only messages.
-        # Its role files never merge back into the parent's filesystem state.
-        child = create_agent(model=model, tools=[TOOLS[name] for name in role.get("tools", manifest["tools"]["names"])],
-                             system_prompt=role_prompt(manifest, role["id"]) + "\n\n" + EXECUTION_PROTOCOL,
-                             middleware=[FilesystemMiddleware(backend=StateBackend(), tools=["read_file"])])
+    def compile_worker(role, name, description):
         async def invoke(state, config):
-            result = await child.ainvoke({"messages": state["messages"], "files": worker_files(manifest, role["id"])}, config=config)
-            return {"messages": result["messages"]}
-        return {"name": role["id"], "description": role["description"], "runnable": RunnableLambda(invoke)}
-    subagents.extend(compile_specialist(role) for role in manifest["topology"]["roles"][1:])
+            branch = project.fork()
+            child = create_agent(model=model, tools=bound_tools(role, branch),
+                                 system_prompt=role_prompt(manifest, role["id"]) + "\n\n" + EXECUTION_PROTOCOL +
+                                 "\nYou work in an isolated project copy. Edit your copy and report what changed; the parent reviews and merges.",
+                                 middleware=[FilesystemMiddleware(backend=StateBackend(), tools=["read_file"])])
+            try:
+                result = await child.ainvoke({"messages": state["messages"], "files": worker_files(manifest, role["id"])}, config=config)
+                branch.status = "completed"
+                summary = result["messages"][-1].text
+                return {"messages": [AIMessage(content=summary + "\n\nWorkspace ID: " + branch.branch_id +
+                                               "\nChanged files: " + json.dumps(branch.changed()) +
+                                               "\nReview with project_diff and accept files with project_merge.")]}
+            finally:
+                if branch.status != "completed":
+                    branch.status = "interrupted"
+                branch.persist()
+        return {"name": name, "description": description, "runnable": RunnableLambda(invoke)}
+    subagents = [compile_worker(root_role, "general-purpose", "A temporary worker with a copy of the project; include a bounded task and review its changes.")]
+    subagents.extend(compile_worker(role, role["id"], role["description"]) for role in manifest["topology"]["roles"][1:])
     return create_deep_agent(
         model=model, tools=tools, system_prompt=prompt, backend=backend,
         middleware=[FilesystemMiddleware(backend=backend, tools=["read_file"])], subagents=subagents,
@@ -244,7 +279,7 @@ def build_agent(manifest: dict, settings: Settings):
 
 async def execute(store: Store, settings: Settings, *, task_id: str, split: str, prompt: str, expected,
                   require_delegation: bool = False, version_id: str | None = None, budget=None, phase="execution",
-                  ungraded: bool = False, conversation=None, chat_turn_id: str | None = None) -> dict:
+                  ungraded: bool = False, conversation=None, chat_turn_id: str | None = None, initial_files: dict | None = None) -> dict:
     """Caller owns the controller lock. The evaluator's expected value never enters the agent."""
     run = store.start_run(task_id, split, prompt, version_id=version_id)
     if chat_turn_id:
@@ -253,9 +288,12 @@ async def execute(store: Store, settings: Settings, *, task_id: str, split: str,
     start = time.monotonic()
     output, grade, error, status = None, None, None, "failed"
     try:
-        agent = build_agent(run["manifest"], settings)
+        files = store.start_project(run["id"], split, chat_turn_id, initial_files)
+        project = Project(files, save=lambda current, branches: store.save_project(run["id"], current, branches))
+        agent = build_agent(run["manifest"], settings, project)
         trace.record("runtime_config", trace.root, request_interval_seconds=2,
-                     filesystem="state_snapshot", readable_paths=sorted(worker_files(run["manifest"])))
+                     filesystem="project_snapshot_v1", readable_paths=sorted(worker_files(run["manifest"])),
+                     project_paths=sorted(files))
         needs_execution = "python_execute" in run["manifest"]["tools"]["names"] and requests_python_execution(prompt)
         async def work():
             inputs = {"messages": [*(conversation or []), HumanMessage(content=prompt)], "files": worker_files(run["manifest"])}
@@ -270,13 +308,15 @@ async def execute(store: Store, settings: Settings, *, task_id: str, split: str,
                 inputs = {**result, "messages": [*result["messages"], HumanMessage(content=(
                     "The task explicitly requests actual execution. No successful python_execute call was observed. "
                     "A printed tool-call JSON, plan, or code listing is not execution. "
-                    "Call python_execute through the native tool interface with a complete, self-contained program "
-                    "and its tests. Inspect the output, then report the actual results. If you cannot execute, say so."
+                    "Save implementation and tests with project_write, then call python_execute(file_path=...) through "
+                    "the native tool interface. Inspect output and report actual results. If you cannot execute, say so."
                 ))]}
             raise AssertionError("Unreachable")
         result = await asyncio.wait_for(work(), timeout=run["manifest"]["limits"]["wall_seconds"])
         if trace.violation:
             raise BudgetExceeded(trace.violation)
+        if trace.stall_reason:
+            raise NoProgress(trace.stall_reason)
         output = result["messages"][-1].text.strip()
         grade = None if ungraded else grade_output(output, expected)
         if require_delegation and (trace.worker_count == 0 or "decimal_product" not in trace.child_tools):
@@ -291,6 +331,8 @@ async def execute(store: Store, settings: Settings, *, task_id: str, split: str,
             trace.record("evaluation_finished", trace.root, **grade)
     except BudgetExceeded as exc:
         status, error = "budget_exceeded", str(exc)
+    except NoProgress as exc:
+        status, error, output = "incomplete", str(exc), str(exc)
     except TimeoutError:
         status, error = "timed_out", "Run exceeded its wall-clock limit"
     except asyncio.CancelledError:

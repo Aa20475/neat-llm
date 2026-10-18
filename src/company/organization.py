@@ -22,12 +22,13 @@ def behavior_digest(manifest: dict) -> str:
 
 
 def tool_revision() -> str:
-    sources = ("agent_tools.py", "python_runner.py")
+    sources = ("agent_tools.py", "python_runner.py", "project_runner.py", "project.py")
     return hashlib.sha256(b"".join(name.encode() + b"\0" + Path(__file__).with_name(name).read_bytes()
                                    for name in sources)).hexdigest()
 
 
 def initial_manifest(settings: Settings) -> dict:
+    from company.project import PROJECT_TOOLS
     return {
         "schema_version": 1,
         "label": "v0",
@@ -47,8 +48,8 @@ def initial_manifest(settings: Settings) -> dict:
         "skills": {},
         "task_memory": {},
         "tools": {
-            "names": ["decimal_product", "decimal_sum", "python_execute"], "source_sha256": tool_revision(),
-            "framework": ["read_file", "write_todos", "task"], "filesystem": "ephemeral_state",
+            "names": ["decimal_product", "decimal_sum", "python_execute", *PROJECT_TOOLS], "source_sha256": tool_revision(),
+            "framework": ["read_file", "write_todos", "task"], "filesystem": "project_snapshot_v1",
         },
         "topology": {
             "root": "generalist",
@@ -89,7 +90,7 @@ def validate_manifest(manifest: dict) -> None:
         raise ValueError("Each specialist needs exactly one root delegation edge")
     if manifest["tools"]["source_sha256"] != tool_revision():
         raise ValueError("Tool implementation changed; create an explicit new version before running")
-    if manifest["tools"].get("filesystem") != "ephemeral_state" or manifest["tools"].get("framework") != ["read_file", "write_todos", "task"]:
+    if manifest["tools"].get("filesystem") != "project_snapshot_v1" or manifest["tools"].get("framework") != ["read_file", "write_todos", "task"]:
         raise ValueError("Unsupported framework tool configuration")
     inference = manifest["inference"]
     if (inference["temperature"], inference["max_retries"], inference["enable_thinking"]) != (0, 0, False):
@@ -97,7 +98,8 @@ def validate_manifest(manifest: dict) -> None:
     if not 1 <= inference["max_tokens"] <= 8192 or not 0 < inference["timeout"] <= 120:
         raise ValueError("Inference limits outside controller policy")
     from company.agent_tools import TOOLS
-    if set(manifest["tools"]["names"]) - TOOLS.keys():
+    from company.project import PROJECT_TOOLS
+    if set(manifest["tools"]["names"]) - (TOOLS.keys() | set(PROJECT_TOOLS)):
         raise ValueError("Unknown tool binding")
     for package, pinned in manifest["runtime"].items():
         if version(package) != pinned:

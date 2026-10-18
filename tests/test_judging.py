@@ -17,6 +17,8 @@ def test_independent_review_promotes_only_preferred_candidate(tmp_path, monkeypa
     store = Store(tmp_path / "company.sqlite3")
     active = store.initialize(initial_manifest(settings))
     task = store.start_run("task-user", "learning", "Produce a concise plan with three steps")
+    store.start_project(task["id"], "learning", initial_files={"input.txt": "starting input"})
+    store.save_project(task["id"], {"input.txt": "starting input", "solution.py": "ANSWER_FROM_LEARNING"}, {})
     store.finish(task["id"], "completed", "Initial answer", None, {})
     reflection = store.start_reflection([task["id"]], [])
     document = {"title": "Check explicit requirements", "rationale": "INTERNAL_PROPOSAL_RATIONALE",
@@ -30,6 +32,8 @@ def test_independent_review_promotes_only_preferred_candidate(tmp_path, monkeypa
         kwargs["budget"].reserve()
         assert kwargs["split"] == "review" and kwargs["ungraded"] and kwargs["expected"] is None
         assert store.active() == active
+        assert kwargs["initial_files"] == {"input.txt": "starting input"}
+        kwargs["initial_files"]["input.txt"] = "A branch's edits must not affect the next branch"
         row = store.start_run(kwargs["task_id"], kwargs["split"], kwargs["prompt"], kwargs["version_id"])
         store.finish(row["id"], "completed", "Answer " + kwargs["version_id"][:5], None,
                      {"model_calls": 1, "input_tokens": 100, "output_tokens": 20, "complete": True})
