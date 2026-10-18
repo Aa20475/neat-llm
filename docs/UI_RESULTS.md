@@ -1,5 +1,20 @@
 # Interactive UI verification
 
+## Markdown responses, 2026-10-17
+
+Chat responses now render headings, emphasis, nested lists, fenced/inline code,
+quotes, tables, and links using locally bundled markdown-it 15.0.3. User prompts
+and error text remain literal. Raw HTML is escaped, unsafe link schemes are
+rejected, and images display their descriptions without making requests. See
+[dependency provenance and license](THIRD_PARTY.md).
+
+All 175 Python tests and five JavaScript Markdown checks pass. A Chrome fixture
+check verified formatting, links, inert HTML/script payloads, table alignment
+under the existing CSP, desktop/mobile layout, and horizontal scrolling confined
+to wide code blocks. It recorded no JavaScript/CSP errors, external requests, or
+inference calls. Evidence: `artifacts/markdown-check.json`,
+`artifacts/markdown-desktop.png`, and `artifacts/markdown-mobile.png`.
+
 ## Integration into main, 2026-10-17
 
 Merged `jerry-ui-improvments` through `8b7c97b`, retaining its neutral Neat

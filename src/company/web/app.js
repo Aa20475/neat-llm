@@ -205,7 +205,9 @@ function renderChat() {
   messages._thread = selectedThread;
   const messagesHTML = turns.filter(turn => turn.thread_id === selectedThread).map(turn => {
     const label = state.versions.find(version => version.id === turn.version_id)?.manifest.label || "Active team";
-    const response = turn.status === "running" ? chatActivity(turn) : `<div class="chat-text">${esc(turn.output || turn.error || "No response recorded.")}</div>`;
+    const response = turn.status === "running" ? chatActivity(turn) : turn.output
+      ? `<div class="chat-text markdown-body">${renderMarkdown(turn.output)}</div>`
+      : `<div class="chat-text">${esc(turn.error || "No response recorded.")}</div>`;
     return `<article class="chat-message from-user"><div class="chat-message-label">You</div><div class="chat-text">${esc(turn.prompt)}</div></article><article class="chat-message from-team"><div class="chat-message-label">${esc(label)} ${turn.version_id ? `<span class="mono">${short(turn.version_id)}</span>` : ""} ${badge(turn.status, turn.status === "completed" ? "Response returned · unverified" : undefined)}</div>${response}${turn.error && turn.output ? `<p>${esc(turn.error)}</p>` : ""}<div class="chat-meta">${turn.usage ? `${num((turn.usage.input_tokens || 0) + (turn.usage.output_tokens || 0))} tokens · ${num(turn.usage.model_calls)} calls` : ""}${turn.run_id ? `<button class="text-button" data-result-run="${esc(turn.run_id)}">View workers & trace ↗</button>` : ""}</div></article>`;
   }).join("") || `<div class="chat-welcome"><div class="welcome-brand">${icon("neat")}<span>neat</span></div><h2>What can we work on?</h2></div>`;
   // Keep the animation, selection and scroll position intact during unrelated updates.

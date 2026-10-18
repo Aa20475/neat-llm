@@ -20,7 +20,7 @@ dev = ["pytest==9.1.1"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-company = ["web/*.html", "web/*.css", "web/*.js"]
+company = ["web/*.html", "web/*.css", "web/*.js", "web/*.LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

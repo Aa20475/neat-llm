@@ -128,7 +128,10 @@ def handler_for(db_path: Path):
                         store.close()
                     data, content_type = json.dumps(payload).encode(), "application/json"
                 else:
-                    assets = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"), "/style.css": ("style.css", "text/css")}
+                    assets = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
+                              "/style.css": ("style.css", "text/css"),
+                              "/markdown-it.min.js": ("markdown-it.min.js", "text/javascript"),
+                              "/markdown.js": ("markdown.js", "text/javascript")}
                     if path not in assets:
                         self.send_error(404)
                         return
