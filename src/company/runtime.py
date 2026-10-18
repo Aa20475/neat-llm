@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import replace
+import sys
 import threading
 import time
 
@@ -90,7 +91,7 @@ class RunTrace(BaseCallbackHandler):
             self.link(run_id, parent_run_id)
             if self.violation:
                 raise BudgetExceeded(self.violation)
-            if self.calls >= self.limits["model_calls"]:
+            if self.limits["model_calls"] is not None and self.calls >= self.limits["model_calls"]:
                 self.deny("model_calls")
             if self.budget:
                 self.budget.reserve()
@@ -121,7 +122,7 @@ class RunTrace(BaseCallbackHandler):
             self.link(run_id, parent_run_id)
             if self.violation:
                 raise BudgetExceeded(self.violation)
-            if self.tool_calls >= self.limits["tool_calls"]:
+            if self.limits["tool_calls"] is not None and self.tool_calls >= self.limits["tool_calls"]:
                 self.deny("tool_calls")
             name = serialized.get("name", "unknown")
             # Explicit allowlist also applies to framework-injected tools.
@@ -132,7 +133,7 @@ class RunTrace(BaseCallbackHandler):
             self.tool_owners[str(run_id)] = owner
             arguments = inputs if isinstance(inputs, dict) else {"input": input_str}
             if name == "task":
-                if self.worker_count >= self.limits["workers"]:
+                if self.limits["workers"] is not None and self.worker_count >= self.limits["workers"]:
                     self.deny("workers")
                 if self.depths[owner] >= self.limits["worker_depth"]:
                     self.deny("worker_depth")
@@ -228,7 +229,9 @@ async def execute(store: Store, settings: Settings, *, task_id: str, split: str,
                      filesystem="state_snapshot", readable_paths=sorted(worker_files(run["manifest"])))
         result = await asyncio.wait_for(agent.ainvoke(
             {"messages": [*(conversation or []), HumanMessage(content=prompt)], "files": worker_files(run["manifest"])},
-            config={"callbacks": [trace], "recursion_limit": 50},
+            # LangGraph requires a positive integer. Use its effectively unbounded
+            # range so an unrelated 50-step ceiling does not replace the call cap.
+            config={"callbacks": [trace], "recursion_limit": sys.maxsize},
         ), timeout=run["manifest"]["limits"]["wall_seconds"])
         if trace.violation:
             raise BudgetExceeded(trace.violation)

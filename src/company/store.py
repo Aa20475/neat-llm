@@ -1,6 +1,7 @@
 """SQLite control state and replay records. No model has a connection to this store."""
 
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime, timezone
 import fcntl
 import json
@@ -9,7 +10,7 @@ import sqlite3
 import threading
 from uuid import uuid4
 
-from company.organization import canonical_json, digest
+from company.organization import canonical_json, digest, validate_manifest
 
 
 def now() -> str:
@@ -96,6 +97,32 @@ class Store:
         if row is None:
             raise ValueError("Organization is not initialized; run `python -m company init`")
         return {"version_id": row["active_version"], "generation": row["generation"], "manifest": self.manifest(row["active_version"])}
+
+    def remove_budgets(self, max_tokens: int = 4096) -> dict:
+        """Explicit operator settings change, never a reflection promotion. Caller holds controller lock."""
+        with self._lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            for table, status in (("runs", "running"), ("reflections", "running"),
+                                  ("actions", "running"), ("proposals", "evaluating")):
+                if self.db.execute(f"SELECT 1 FROM {table} WHERE status=?", (status,)).fetchone():
+                    raise ValueError("Wait for the current task or reflection to finish before changing settings")
+            active = self.active()
+            manifest = deepcopy(active["manifest"])
+            for key in ("model_calls", "tool_calls", "workers", "wall_seconds"):
+                manifest["limits"][key] = None
+            manifest["inference"]["max_tokens"] = max_tokens
+            if manifest == active["manifest"]:
+                return active
+            manifest["label"] = active["manifest"]["label"] + "-unlimited"
+            validate_manifest(manifest)
+            version_id, generation = digest(manifest), active["generation"] + 1
+            self.db.execute("INSERT OR IGNORE INTO versions VALUES (?,?,?)", (version_id, now(), canonical_json(manifest)))
+            self.db.execute("UPDATE organization SET active_version=?,generation=? WHERE singleton=1", (version_id, generation))
+            result = {"from_version": active["version_id"], "to_version": version_id, "generation": generation,
+                      "reason": "User removed aggregate execution budgets", "limits": manifest["limits"], "max_tokens": max_tokens}
+            self.db.execute("INSERT INTO actions VALUES (?,?,?,?,?,?)", (
+                uuid4().hex, now(), "runtime_settings", "completed", canonical_json(result), None))
+        return self.active()
 
     def manifest(self, version_id: str) -> dict:
         row = self.db.execute("SELECT manifest FROM versions WHERE id=?", (version_id,)).fetchone()

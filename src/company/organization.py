@@ -56,7 +56,7 @@ def initial_manifest(settings: Settings) -> dict:
             "edges": [],
             "temporary_worker": {"type": "general-purpose", "inherits_role": "generalist"},
         },
-        "limits": {"model_calls": 10, "tool_calls": 16, "workers": 3, "worker_depth": 1, "wall_seconds": 150},
+        "limits": {"model_calls": None, "tool_calls": None, "workers": None, "worker_depth": 1, "wall_seconds": None},
     }
 
 
@@ -102,11 +102,12 @@ def validate_manifest(manifest: dict) -> None:
     for package, pinned in manifest["runtime"].items():
         if version(package) != pinned:
             raise ValueError(f"Runtime package differs from saved version: {package}")
-    maxima = {"model_calls": 20, "tool_calls": 40, "workers": 5, "worker_depth": 1, "wall_seconds": 300}
-    for name, maximum in maxima.items():
+    for name in ("model_calls", "tool_calls", "workers", "wall_seconds"):
         value = manifest["limits"][name]
-        if type(value) is not int or not 1 <= value <= maximum:
+        if value is not None and (type(value) is not int or value < 1):
             raise ValueError(f"Invalid controller limit: {name}")
+    if type(manifest["limits"]["worker_depth"]) is not int or manifest["limits"]["worker_depth"] != 1:
+        raise ValueError("Only one level of worker delegation is supported")
 
 
 def role_prompt(manifest: dict, role_id: str = "generalist") -> str:

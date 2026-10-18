@@ -128,7 +128,7 @@ function renderReflectionAction() {
   const hasEvidence = state.runs.some(row => row.split === "learning" && row.status === "completed" && row.version_id === state.active.version_id);
   $("#run-reflection").disabled = running || companyBusy() || !hasEvidence;
   $("#run-reflection").textContent = running ? "Reflecting…" : "Run reflection ↗";
-  let message = hasEvidence ? "Custom tasks: replay both versions, then let a separate LLM recommend promotion. Subjective review; at most 12 comparison/reviewer calls." : "Send a task in Chat with ‘Use this task for reflection’ checked, then return here.";
+  let message = hasEvidence ? "Custom tasks: replay both versions, then let a separate LLM recommend promotion. Subjective review; no shared model-call or time budget." : "Send a task in Chat with ‘Use this task for reflection’ checked, then return here.";
   if (running) message = state.proposals.some(row => row.status === "evaluating") ? "Comparing the candidate with the active version…" : "Reviewing learning tasks and prior reflection lessons…";
   else if (action?.status === "completed") {
     const result = action.result || {}, outcome = result.evaluation?.status || result.reflection?.status || "completed";
@@ -141,7 +141,8 @@ function documentQueryResultButtons() {document.querySelectorAll("[data-result-r
 function renderVersions() {
   function versionStatus(version) {if(version.id === state.active.version_id) return badge("active", "Active · used for new runs"); const proposal = state.proposals.find(row => row.candidate_version === version.id); return proposal ? badge(proposal.status) : badge("saved", "Saved baseline");}
   $("#versions").innerHTML = state.versions.map(version => `<section class="panel version-card"><div class="version-top"><div><h3>${esc(version.manifest.label)} ${versionStatus(version)}</h3><div class="mono">${esc(version.id)}</div><div class="version-chips">${version.manifest.topology.roles.map(role => `<span class="role-chip">${esc(role.id)}</span>`).join("")}<span class="badge">${Object.keys(version.manifest.skills).length} skills</span><span class="badge">${Object.keys(version.manifest.task_memory).length} memory entries</span></div></div><span class="small muted">${new Date(version.created_at).toLocaleString()}</span></div><details><summary>Inspect immutable manifest</summary>${pre(version.manifest)}</details></section>`).join("");
-  $("#activations").innerHTML = state.activations.map(row => `<article class="memory-card"><span class="mono small">${short(row.from_version)} → ${short(row.to_version)}</span><p>Generation ${row.generation} · ${esc(row.reason)}</p></article>`).join("") || empty("Initial version is active", "Adoption will append a generation change here.");
+  const history = [...state.activations.map(row => ({...row, kind:"Evaluated activation / revocation"})), ...(state.actions || []).filter(row => row.kind === "runtime_settings" && row.status === "completed").map(row => ({...row.result, kind:"Operator settings change"}))].sort((a,b) => b.generation-a.generation);
+  $("#activations").innerHTML = history.map(row => `<article class="memory-card"><span class="badge">${esc(row.kind)}</span> <span class="mono small">${short(row.from_version)} → ${short(row.to_version)}</span><p>Generation ${row.generation} · ${esc(row.reason)}</p></article>`).join("") || empty("Initial version is active", "Adoption and settings changes will appear here.");
   $("#audits").innerHTML = (state.audits || []).map(audit => {
     const {plan, report} = audit;
     const score = branch => {const row = report.scores?.[branch]; return row ? `${row.passed} / ${row.graded} graded · ${num(row.tokens)} tokens` : "Pending";};
@@ -154,7 +155,7 @@ function renderChat() {
   const threads = state.chat_threads || [], turns = state.chat_turns || [];
   if (selectedThread === undefined || (selectedThread && !threads.some(row => row.id === selectedThread))) selectedThread = threads[0]?.id || null;
   const active = state.active;
-  $("#chat-active").textContent = `${active.manifest.label} · ${active.manifest.topology.roles.length} saved roles`;
+  $("#chat-active").textContent = `${active.manifest.label} · ${active.manifest.topology.roles.length} saved roles · ${active.manifest.limits.model_calls == null ? "unlimited model calls" : `${active.manifest.limits.model_calls} model calls`}`;
   $("#chat-threads").innerHTML = threads.map(thread => `<button class="proposal-card ${thread.id === selectedThread ? "selected" : ""}" data-thread="${esc(thread.id)}"><h3>${esc(thread.title)}</h3><span class="small muted">${date(thread.created_at)}</span></button>`).join("") || empty("Your first conversation", "Give the active team a task to begin.");
   document.querySelectorAll("[data-thread]").forEach(button => button.onclick = () => {selectedThread = button.dataset.thread; renderChat();});
   const messages = $("#chat-messages"), oldTop = messages.scrollTop;

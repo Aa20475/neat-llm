@@ -12,7 +12,7 @@ The reviewer chooses A, B, tie, or neither and gives a reason. A candidate prefe
 
 This is the requested **subjective prototype gate**. It evaluates one reused task, can be biased or mistaken, and does not prove improvement on unseen work. Review labels and reasoning are visible in the UI. Responses remain ungraded; LLM preference is never shown as a deterministic pass. Saved benchmark proposals continue to use their existing exact-output checks.
 
-The comparison has a shared limit of 12 model calls and a 180-second admission deadline, including both execution branches, their workers, and the reviewer. The reviewer has at most 700 output tokens and no automatic retries. The preceding reflection call has its separate existing cap. Reviewer usage is stored explicitly and counted once in UI totals. Duplicate proposals skip comparison.
+The comparison has no shared model-call or admission-time budget. Both execution branches and their workers use their pinned run settings; new unlimited snapshots have no aggregate execution caps. The reviewer has at most 700 output tokens and no automatic retries. The preceding reflection call has its separate existing cap. Reviewer usage is stored explicitly and counted once in UI totals. Duplicate proposals skip comparison.
 
 The initial reset archived all old records under ignored `data/archive/` and recreated v0 at generation 0: one generalist, no saved specialists, no bound skills or task memory, and empty run/reflection history. Resetting local state does not make the old published benchmark tasks unseen again. No tasks or reflection calls were seeded into the clean workspace.
 

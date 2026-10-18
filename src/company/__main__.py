@@ -22,6 +22,8 @@ async def main() -> int:
     commands.add_parser("init", help="Save v0 once; never reset an existing organization")
     commands.add_parser("status", help="Read the active manifest, without inference")
     commands.add_parser("history", help="Read recorded runs, without inference")
+    unlimit = commands.add_parser("unlimit", help="Remove aggregate run budgets in a new saved version; preserves history")
+    unlimit.add_argument("--max-tokens", type=int, default=4096, help="Output tokens per model response (default: 4096)")
     reflect = commands.add_parser("reflect", help="Propose from learning evidence, compare, and activate only if qualified; paid calls")
     reflect.add_argument("--propose-only", action="store_true", help="Save a proposal without running its comparison")
     compare = commands.add_parser("evaluate", help="Run the fixed paired gate for a pending proposal; paid calls")
@@ -49,6 +51,12 @@ async def main() -> int:
             emit({"version_id": active["version_id"], "generation": active["generation"], "label": active["manifest"]["label"]})
         elif args.command == "status":
             emit(store.active())
+        elif args.command == "unlimit":
+            with store.controller():
+                active = store.remove_budgets(args.max_tokens)
+            emit({"version_id": active["version_id"], "generation": active["generation"],
+                  "label": active["manifest"]["label"], "limits": active["manifest"]["limits"],
+                  "max_tokens": active["manifest"]["inference"]["max_tokens"]})
         elif args.command == "history":
             emit(store.history())
         elif args.command == "proposals":

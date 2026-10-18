@@ -69,7 +69,7 @@ class ChatService:
                     store.close()
                     self.busy.release()
 
-            # A normal server shutdown waits for the bounded run to finish.
+            # A normal server shutdown waits for an active run to finish.
             threading.Thread(target=work, name=f"chat-{turn['id'][:8]}", daemon=False).start()
             return turn
         except BaseException:

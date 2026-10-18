@@ -11,7 +11,7 @@ from company.store import Store
 from company.workload import FIXTURES, load_cases, task_prompt
 
 POLICY = {
-    "name": "paired-development-v1", "max_model_calls": 24, "wall_seconds": 240,
+    "name": "paired-development-v2-unlimited", "max_model_calls": None, "wall_seconds": None,
     "max_candidate_token_ratio": 1.5, "min_token_reduction": 0.15,
     "cases": ["learn-trim-and-empty", "learn-round-lines-first", "validate-leading-zero-quantity", "validate-stable-duplicates"],
 }
@@ -20,13 +20,20 @@ POLICY = {
 class EvaluationBudget:
     def __init__(self, limit=POLICY["max_model_calls"], wall_seconds=POLICY["wall_seconds"]):
         self.limit, self.used = limit, 0
-        self.deadline = time.monotonic() + wall_seconds
+        self.deadline = None if wall_seconds is None else time.monotonic() + wall_seconds
         self.lock = threading.Lock()
+
+    def check(self):
+        if ((self.limit is not None and self.used >= self.limit) or
+                (self.deadline is not None and time.monotonic() > self.deadline)):
+            raise BudgetExceeded("Shared evaluation budget exhausted")
+
+    def request_timeout(self, timeout):
+        return timeout if self.deadline is None else min(timeout, max(1, self.deadline - time.monotonic()))
 
     def reserve(self):
         with self.lock:
-            if self.used >= self.limit or time.monotonic() > self.deadline:
-                raise BudgetExceeded("Shared evaluation budget exhausted")
+            self.check()
             self.used += 1
 
 
@@ -81,8 +88,7 @@ async def evaluate(store: Store, settings, proposal_id: str, activate: bool = Tr
             # Alternate branch order; neither branch learns or activates during evaluation.
             branches = ("base", "candidate") if index % 2 == 0 else ("candidate", "base")
             for branch in branches:
-                if budget.used >= budget.limit or time.monotonic() > budget.deadline:
-                    raise BudgetExceeded("Shared evaluation budget exhausted")
+                budget.check()
                 print(f"Comparing {case['id']} · {branch}", flush=True)
                 result = await execute(store, settings, task_id=case["id"], split="validation", prompt=task_prompt(case),
                                        expected=case["expected"], version_id=proposal[f"{branch}_version"], budget=budget, phase="evaluation")

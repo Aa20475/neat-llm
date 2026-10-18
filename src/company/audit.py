@@ -13,9 +13,9 @@ from company.workload import FIXTURES, load_cases, task_prompt
 
 
 POLICY = {
-    "name": "frozen-heldout-v1", "suite_id": "orders-heldout-v1",
+    "name": "frozen-heldout-v2-unlimited", "suite_id": "orders-heldout-v1",
     "cases": ["heldout-independent-rounding", "heldout-zero-and-ordering"],
-    "repetitions": 2, "max_model_calls": 16, "wall_seconds": 240,
+    "repetitions": 2, "max_model_calls": None, "wall_seconds": None,
     "activation": False, "reflection_feedback": False,
 }
 
@@ -105,8 +105,7 @@ async def audit(store: Store, settings, proposal_id: str) -> dict:
                 # Each task sees both branch orders across its two repetitions.
                 branches = ("base", "candidate") if (index + repetition) % 2 == 0 else ("candidate", "base")
                 for branch in branches:
-                    if budget.used >= budget.limit or time.monotonic() > budget.deadline:
-                        raise BudgetExceeded("Frozen audit budget exhausted")
+                    budget.check()
                     print(f"Auditing {case['id']} · repetition {repetition + 1} · {branch}", flush=True)
                     result = await execute(store, settings, task_id=case["id"], split="heldout", prompt=task_prompt(case),
                                            expected=case["expected"], version_id=versions[branch], budget=budget, phase="heldout")

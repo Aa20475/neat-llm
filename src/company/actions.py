@@ -1,4 +1,4 @@
-"""Explicit UI actions run the same bounded reflection pipeline as the CLI."""
+"""Explicit UI actions run the same reflection pipeline as the CLI."""
 
 import threading
 

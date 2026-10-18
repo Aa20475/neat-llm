@@ -15,7 +15,7 @@ class Settings:
     api_key: str = field(repr=False)
     model: str
     base_url: str = "https://api.inference.crusoecloud.com/v1"
-    max_tokens: int = 1024
+    max_tokens: int = 4096
     timeout: float = 45
 
     @classmethod
@@ -29,7 +29,7 @@ class Settings:
             api_key=api_key,
             model=model,
             base_url=os.environ.get("CRUSOE_BASE_URL", cls.base_url).rstrip("/"),
-            max_tokens=int(os.environ.get("CRUSOE_MAX_TOKENS", "1024")),
+            max_tokens=int(os.environ.get("CRUSOE_MAX_TOKENS", "4096")),
             timeout=float(os.environ.get("CRUSOE_TIMEOUT_SECONDS", "45")),
         )
         if not result.base_url.startswith("https://"):
