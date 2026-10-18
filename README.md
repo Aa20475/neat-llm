@@ -6,6 +6,8 @@ V0 is one generalist that spawns temporary subagents as needed. The reflection l
 
 [Demo and submission plan](docs/DEMO.md): a one-minute storyboard, available NemoClaw visualization capabilities, and the submission checklist.
 
+[Pitch cheat sheet](docs/PITCH_CHEATSHEET.md) covers the current models, prompts, architecture, and judging Q&A. [Elevator pitch scripts](docs/ELEVATOR_PITCH.md) provide ten-second, thirty-second, and one-minute versions.
+
 Steps 1–4 include Crusoe integration, persistent execution, a local visualizer, separate reflection memory, typed proposals, paired evaluation, atomic activation, and a frozen held-out audit. The UI also supports chat with the active team and a button to run reflection. Real experiments exercised rejection, revocation, and duplicate detection. The active topology remains one generalist; an operator settings change removed execution budgets. Reliable learned improvement has not been demonstrated.
 
 [Step 2 verification](docs/STEP2_RESULTS.md): 20 local tests pass, real temporary delegation passes, and restart preserves v0. The first learning run scored 1/2; the sorting failure is retained for reflection.
