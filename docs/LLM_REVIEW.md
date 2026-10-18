@@ -1,7 +1,7 @@
 # Try reflection on your own task
 
 1. Open Chat and start a new conversation with the active generalist.
-2. Check **Use this task for reflection** and send a self-contained task with clear requirements. The task runs independently of prior chat. Its input, answer, worker trace, and usage become learning evidence; its answer is not assigned an invented test score.
+2. Check **Use this task for reflection** and send a self-contained task with clear requirements. A first shared task excludes earlier private chat. Shared follow-ups retain earlier shared turns from the same conversation; use a new conversation for an independent task. Its input, answer, worker trace, and usage become learning evidence; its answer is not assigned an invented test score.
 3. After the answer finishes, open Reflection lab and press **Run reflection**.
 
 Reflection proposes at most one change. If it creates a new candidate, the controller replays the latest task from that proposal's recorded learning evidence on both the saved base version and the candidate. Each run starts from its pinned organization and fresh task state.

@@ -1,5 +1,6 @@
 import asyncio
 from copy import deepcopy
+import json
 import threading
 
 import pytest
@@ -121,4 +122,41 @@ def test_opted_in_task_is_learning_evidence_without_private_chat_context(tmp_pat
     evidence = learning_evidence(store, active["version_id"])
     assert len(evidence) == 1 and evidence[0]["task"] == "A standalone task"
     assert evidence[0]["grade"] is None and "Private" not in str(evidence)
+    store.close()
+
+
+def test_shared_followup_keeps_task_in_saved_replay_without_private_context(tmp_path, monkeypatch):
+    settings = Settings(api_key="test", model="test-model")
+    store = Store(tmp_path / "company.sqlite3")
+    store.initialize(initial_manifest(settings))
+    private = store.start_chat_turn("PRIVATE earlier conversation")
+    private_run = store.start_run("private", "chat", "PRIVATE earlier conversation")
+    store.link_chat_run(private["id"], private_run["id"])
+    store.finish(private_run["id"], "completed", "PRIVATE reply", None, {})
+    store.finish_chat_turn(private["id"], "completed")
+    task_prompt = "Implement and execute a Python scheduler"
+    shared = store.start_chat_turn(task_prompt, private["thread_id"])
+    shared_run = store.start_run("task", "learning", task_prompt)
+    store.link_chat_run(shared["id"], shared_run["id"])
+    store.finish(shared_run["id"], "incomplete", "I will begin", None, {})
+    store.finish_chat_turn(shared["id"], "incomplete")
+    monkeypatch.setattr(Settings, "load", lambda: settings)
+    async def execution(store, settings, **kwargs):
+        assert kwargs["conversation"] == [] and kwargs["split"] == "learning"
+        assert "PRIVATE" not in kwargs["prompt"]
+        context = json.loads(kwargs["prompt"].split("\n", 1)[1])
+        assert context["current_request"] == "Do it"
+        assert context["previous_messages"][0]["content"] == task_prompt
+        row = store.start_run(kwargs["task_id"], kwargs["split"], kwargs["prompt"])
+        store.link_chat_run(kwargs["chat_turn_id"], row["id"])
+        store.finish(row["id"], "completed", "Executed", None, {})
+        return store.replay(row["id"])
+    monkeypatch.setattr("company.chat.execute", execution)
+    service = ChatService(store.path)
+    result = service.submit({"message": "Do it", "thread_id": shared["thread_id"], "learn": True})
+    assert service.busy.acquire(timeout=5)
+    service.busy.release()
+    turn = next(t for t in store.chat_turns() if t["id"] == result["id"])
+    assert turn["prompt"] == "Do it" and turn["status"] == "completed"
+    assert "Python scheduler" in store.replay(turn["run_id"])["run"]["prompt"]
     store.close()

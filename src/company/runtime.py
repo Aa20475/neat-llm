@@ -2,6 +2,8 @@
 
 import asyncio
 from dataclasses import replace
+import json
+import re
 import sys
 import threading
 import time
@@ -20,6 +22,24 @@ from company.config import Settings
 from company.organization import role_prompt, validate_manifest, worker_files
 from company.store import Store
 from company.workload import grade_output
+
+
+EXECUTION_PROTOCOL = (
+    "When asked to implement and execute code, actually call python_execute and inspect its result before answering. "
+    "Use native tool calls; JSON or code blocks in an ordinary answer do not call a tool. "
+    "Do not stop at a plan or a promise to begin. Each Python call has fresh files and variables: "
+    "submit a self-contained program and all required inputs, and print the results. "
+    "Your final answer must distinguish observed execution results from untested claims."
+)
+
+
+def requests_python_execution(prompt: str) -> bool:
+    """Narrow check for explicit execution requests, not a general correctness judge."""
+    if re.match(r"\s*(explain|describe|how|what)\b", prompt, re.I):
+        return False
+    return bool(re.search(
+        r"\b(?:implement|write|build|create)\s+and\s+(?:execute|run)\b|"
+        r"\b(?:execute|run)\s+(?:(?:the|this|some)\s+)?(?:python|code|script|tests)\b", prompt, re.I))
 
 
 class BudgetExceeded(RuntimeError):
@@ -48,6 +68,7 @@ class RunTrace(BaseCallbackHandler):
         self.input_tokens = self.output_tokens = self.usage_missing = 0
         self.child_tool_calls = 0
         self.child_tools: set[str] = set()
+        self.python_successes = 0
         self.violation: str | None = None
         self._lock = threading.RLock()
 
@@ -158,6 +179,14 @@ class RunTrace(BaseCallbackHandler):
 
     def on_tool_end(self, output, *, run_id, **kwargs):
         with self._lock:
+            if self.tool_names.get(str(run_id)) == "python_execute":
+                value = getattr(output, "content", output)
+                try:
+                    value = json.loads(value) if isinstance(value, str) else value
+                    if isinstance(value, dict) and value.get("status") == "ok":
+                        self.python_successes += 1
+                except (ValueError, TypeError):
+                    pass
             self.record("tool_finished", self.tool_owners.get(str(run_id), self.root), call_id=str(run_id), name=self.tool_names.get(str(run_id)), output=getattr(output, "content", output))
             if child := self.task_workers.get(str(run_id)):
                 self.store.worker_finish(child, "completed")
@@ -190,7 +219,7 @@ def build_agent(manifest: dict, settings: Settings):
     root_role = manifest["topology"]["roles"][0]
     tools = [TOOLS[name] for name in root_role.get("tools", manifest["tools"]["names"])]
     backend = StateBackend()
-    prompt = role_prompt(manifest) + "\nYour saved configuration is available under /organization/; read /organization/README.md for the file index if needed."
+    prompt = role_prompt(manifest) + "\n\n" + EXECUTION_PROTOCOL + "\nYour saved configuration is available under /organization/; read /organization/README.md for the file index if needed."
     subagents = [{
             "name": "general-purpose", "description": "A temporary generalist for a bounded subtask; include the necessary input and instructions.",
             "system_prompt": prompt, "model": model, "tools": tools,
@@ -200,7 +229,7 @@ def build_agent(manifest: dict, settings: Settings):
         # A compiled child stages its own role tree and returns only messages.
         # Its role files never merge back into the parent's filesystem state.
         child = create_agent(model=model, tools=[TOOLS[name] for name in role.get("tools", manifest["tools"]["names"])],
-                             system_prompt=role_prompt(manifest, role["id"]),
+                             system_prompt=role_prompt(manifest, role["id"]) + "\n\n" + EXECUTION_PROTOCOL,
                              middleware=[FilesystemMiddleware(backend=StateBackend(), tools=["read_file"])])
         async def invoke(state, config):
             result = await child.ainvoke({"messages": state["messages"], "files": worker_files(manifest, role["id"])}, config=config)
@@ -227,12 +256,25 @@ async def execute(store: Store, settings: Settings, *, task_id: str, split: str,
         agent = build_agent(run["manifest"], settings)
         trace.record("runtime_config", trace.root, request_interval_seconds=2,
                      filesystem="state_snapshot", readable_paths=sorted(worker_files(run["manifest"])))
-        result = await asyncio.wait_for(agent.ainvoke(
-            {"messages": [*(conversation or []), HumanMessage(content=prompt)], "files": worker_files(run["manifest"])},
-            # LangGraph requires a positive integer. Use its effectively unbounded
-            # range so an unrelated 50-step ceiling does not replace the call cap.
-            config={"callbacks": [trace], "recursion_limit": sys.maxsize},
-        ), timeout=run["manifest"]["limits"]["wall_seconds"])
+        needs_execution = "python_execute" in run["manifest"]["tools"]["names"] and requests_python_execution(prompt)
+        async def work():
+            inputs = {"messages": [*(conversation or []), HumanMessage(content=prompt)], "files": worker_files(run["manifest"])}
+            # A protocol repair is distinct from a run-wide budget: if the model
+            # repeatedly refuses execution, return an honest incomplete result.
+            for attempt in range(3):
+                result = await agent.ainvoke(inputs, config={"callbacks": [trace], "recursion_limit": sys.maxsize})
+                if not needs_execution or trace.python_successes or attempt == 2:
+                    return result
+                trace.record("execution_retry", trace.root, attempt=attempt + 1,
+                             reason="Explicit execution requested, but no successful Python tool execution was observed")
+                inputs = {**result, "messages": [*result["messages"], HumanMessage(content=(
+                    "The task explicitly requests actual execution. No successful python_execute call was observed. "
+                    "A printed tool-call JSON, plan, or code listing is not execution. "
+                    "Call python_execute through the native tool interface with a complete, self-contained program "
+                    "and its tests. Inspect the output, then report the actual results. If you cannot execute, say so."
+                ))]}
+            raise AssertionError("Unreachable")
+        result = await asyncio.wait_for(work(), timeout=run["manifest"]["limits"]["wall_seconds"])
         if trace.violation:
             raise BudgetExceeded(trace.violation)
         output = result["messages"][-1].text.strip()
@@ -240,6 +282,11 @@ async def execute(store: Store, settings: Settings, *, task_id: str, split: str,
         if require_delegation and (trace.worker_count == 0 or "decimal_product" not in trace.child_tools):
             grade = {"passed": False, "reason": "delegation_not_observed"}
         status = "completed"  # Completion and independently checked correctness are separate.
+        if needs_execution and not trace.python_successes:
+            status = "incomplete"
+            error = "Execution was requested, but no successful Python execution was observed"
+            if not ungraded:
+                grade = {"passed": False, "reason": "execution_not_observed"}
         if grade is not None:
             trace.record("evaluation_finished", trace.root, **grade)
     except BudgetExceeded as exc:

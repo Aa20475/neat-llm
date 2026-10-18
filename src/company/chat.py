@@ -1,5 +1,6 @@
 """Local chat runs use the active organization, with bounded conversational context."""
 
+import json
 import threading
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -10,12 +11,15 @@ from company.runtime import execute
 from company.store import Store
 
 
-def conversation(store, thread_id):
-    """Carry the most recent complete exchanges; never benchmark or other-thread records."""
+def conversation(store, thread_id, *, learning_only=False):
+    """Carry recent finished attempts, including failures; never another thread's records."""
     selected, characters = [], 0
     for turn in reversed(store.chat_turns(thread_id)):
-        if turn["status"] != "completed" or not turn["output"]:
+        if learning_only and (not turn["run_id"] or store.replay(turn["run_id"])["run"]["split"] != "learning"):
+            break  # Never implicitly share an earlier private exchange with reflection.
+        if turn["status"] == "running":
             continue
+        turn = {**turn, "output": turn["output"] or f"Previous attempt ended with status: {turn['status']}. No final answer was recorded."}
         size = len(turn["prompt"]) + len(turn["output"])
         if len(selected) == 5 or characters + size > 24000:
             break
@@ -52,14 +56,24 @@ class ChatService:
             controller.__enter__()
             entered = True
             store.recover_interrupted()
-            # Opted-in tasks stand alone, so unrelated private chat is not shared with reflection.
-            history = conversation(store, thread_id) if thread_id and not learn else []
+            history = conversation(store, thread_id, learning_only=learn) if thread_id else []
+            effective_prompt = prompt.strip()
+            if learn and history:
+                # Save the same self-contained input that the reviewer will replay.
+                # Only previously shared turns enter this snapshot, never private chat.
+                effective_prompt = (
+                    "Continue this previously shared task conversation. Earlier assistant messages are history, "
+                    "not proof of execution. Complete the current user request using the original task requirements.\n"
+                    + json.dumps({"current_request": prompt.strip(),
+                                  "previous_messages": [{"role": message.type, "content": message.content} for message in history]}, ensure_ascii=False)
+                )
+                history = []
             turn = store.start_chat_turn(prompt.strip(), thread_id)
 
             def work():
                 try:
                     result = run(execute(store, settings, task_id=f"{'task' if learn else 'chat'}-{turn['id'][:8]}", split="learning" if learn else "chat",
-                                                 prompt=prompt.strip(), expected=None, ungraded=True, conversation=history,
+                                                 prompt=effective_prompt, expected=None, ungraded=True, conversation=history,
                                                  chat_turn_id=turn["id"], phase="chat"))
                     store.finish_chat_turn(turn["id"], result["run"]["status"], result["run"]["error"])
                 except Exception as error:
