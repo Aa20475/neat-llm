@@ -1,8 +1,34 @@
-"""Bounded solution evidence from opted-in run snapshots, never host files."""
+"""Full saved event traces and supplementary excerpts from opted-in runs."""
 
 import json
 from pathlib import PurePosixPath
 import re
+
+
+def event_evidence(replay):
+    """Preserve every saved event and worker; enrich attribution without editing payloads."""
+    workers = []
+    for worker in replay["workers"]:
+        if worker["parent_id"]:
+            label = f"Worker {worker['id'].rsplit(':', 1)[-1]} · {worker['role']}"
+        else:
+            label = "Generalist" if worker["role"] == "generalist" else worker["role"]
+        workers.append({**worker, "label": label})
+    by_id = {worker["id"]: worker for worker in workers}
+    events = []
+    for event in replay["events"]:
+        worker = by_id.get(event["worker_id"], {})
+        fallback = "Controller" if event["worker_id"] is None else f"Unknown worker ({event['worker_id']})"
+        events.append({**event, "worker_label": worker.get("label", fallback),
+                       "worker_role": worker.get("role"), "parent_worker_id": worker.get("parent_id"),
+                       "worker_temporary": worker.get("temporary")})
+    return {"workers": workers, "event_trace": events,
+            "trace_coverage": {"source": "all persisted events in sequence order",
+                               "events_available": len(events), "events_included": len(events), "events_omitted": 0,
+                               "workers_included": len(workers), "reflection_payload_truncated": False,
+                               "note": "Reflection adds no payload truncation. The runtime may have clipped strings "
+                                       "at capture time (12,000 characters) and tools may limit their own output. "
+                                       "Previously unrecorded text cannot be recovered."}}
 
 
 def excerpt(text, limit):
