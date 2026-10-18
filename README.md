@@ -4,6 +4,8 @@
 
 V0 is one generalist that spawns temporary subagents as needed. The reflection loop has its own memory of improvement attempts and results. See the [reflection cost optimization plan](docs/REFLECTION_COST_PLAN.md) for staged guidelines on measuring and reducing learning overhead.
 
+The reflector now [learns from completed solutions](docs/REFLECTOR_LEARNING.md): implementation recipes, repaired bugs, and review-added cases can justify skills or scoped project memory even when final tests pass. It sees bounded code/test excerpts, earlier failures, edits, and worker reports; proposals still require evaluation before becoming active.
+
 [Demo and submission plan](docs/DEMO.md): a one-minute storyboard, available NemoClaw visualization capabilities, and the submission checklist.
 
 [Pitch cheat sheet](docs/PITCH_CHEATSHEET.md) covers the current models, prompts, architecture, and judging Q&A. [Elevator pitch scripts](docs/ELEVATOR_PITCH.md) provide ten-second, thirty-second, and one-minute versions.

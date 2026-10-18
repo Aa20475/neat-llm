@@ -6,6 +6,8 @@ Implemented in Step 3: phase-specific usage, one proposal call per cycle, six-tr
 
 Current demo settings: the user removed aggregate execution and evaluation budgets and app-imposed response token caps. Execution, reflection, and judging omit the output-token limit by default; provider defaults still apply. Reflection requests structured JSON and permits one corrective retry after a format or admissibility error; both calls are charged to its usage record. Initial evidence remains bounded. Reintroducing budgets is an operator choice, not an automatic consequence of this optimization plan.
 
+The `solution-learning-v2` reflector now prepares code/test excerpts, early failures, edits, and worker reports without an additional model call. Context selection keeps detailed recent evidence and drops older records when necessary to fit 48,000 characters, recording omitted counts. See [solution learning](REFLECTOR_LEARNING.md). This captures successful methods while keeping reflection input size bounded.
+
 The prototype may incur substantial reflection overhead while we establish that the learning loop works. Measure that overhead from the first run, keep it within an explicit budget, and optimize using the recorded results. Advanced experiment selection is not required for the first prototype. Lower cost must not become an excuse to activate an untested proposal.
 
 V0 is one capable generalist that spawns temporary subagents as needed. Improvements should reuse useful work the generalist already performs. A permanent specialist means a saved role definition; it is invoked only when relevant. Keeping the single-generalist layout is a valid outcome.
