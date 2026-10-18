@@ -5,7 +5,7 @@ import time
 import pytest
 
 from company.agent_tools import python_execute
-from company.python_runner import POLICY, run_python
+from company.python_runner import POLICY, report_execution, run_python
 
 
 def test_python_writes_imports_executes_and_starts_fresh():
@@ -147,3 +147,26 @@ def test_python_does_not_fall_back_without_sandbox(monkeypatch):
     result = asyncio.run(run_python("print('must not execute')"))
     assert result["status"] == "error" and "requires" in result["error"]
     assert "stdout" not in result
+
+
+@pytest.mark.parametrize('stream,text,expected', [
+    ('stdout', 'Error: Dependency depends not found\n', 'error'),
+    ('stderr', 'ValueError: bad dependency\n', 'error'),
+    ('stdout', 'Traceback (most recent call last):\n', 'error'),
+    ('stderr', 'FAILED (failures=1)\n', 'error'),
+    ('stderr', 'Ran 2 tests in 0.001s\n\nOK\n', 'ok'),
+    ('stderr', 'Warning: example warning\n', 'ok'),
+    ('stdout', 'Expected Error: invalid input was rejected\n', 'ok'),
+])
+def test_zero_exit_error_markers_are_flagged_without_confusing_stderr_with_failure(stream, text, expected):
+    result = report_execution({'status': 'ok', 'exit_code': 0, 'stdout': '', 'stderr': '', stream: text})
+    assert result['status'] == expected and result['exit_code'] == 0
+    assert result['process_status'] == 'exited_zero'
+    assert result[stream] == text
+    assert bool(result.get('reported_error')) == (expected == 'error')
+
+
+def test_disposable_runner_also_reports_caught_errors_with_actual_exit_code():
+    result = asyncio.run(run_python("try:\n    raise ValueError('bad input')\nexcept ValueError as error:\n    print(f'Error: {error}')"))
+    assert result['status'] == 'error' and result['exit_code'] == 0
+    assert result['reported_error']['heuristic'] is True

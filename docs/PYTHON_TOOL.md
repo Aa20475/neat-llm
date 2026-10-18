@@ -49,6 +49,8 @@ These illustrate tool calls, not Python functions available inside the sandbox. 
 
 Every execution starts a fresh Python process. **Files persist; variables do not.** Save reusable definitions in modules and import them on the next call. A final expression is displayed automatically. Tools return the actual exit code, bounded stdout/stderr, changed file paths, and a workspace digest.
 
+`process_status` distinguishes a zero exit, nonzero exit, timeout, or unknown outcome. A zero exit does not establish task correctness. If a script catches an exception and prints an explicit error marker (`Error: ...`, a traceback, or `FAILED (failures=...)`), the tool returns `status: error` with `reported_error` identifying the stream and line, while preserving `exit_code: 0`. This is a labeled heuristic over captured output: printed examples can be false positives and unrecognized or truncated errors can be missed. Ordinary stderr, warnings, and successful unittest output are not errors. Prefer assertions and nonzero exits for failures.
+
 Text files created or changed by Python are saved after ordinary success or failure, including assertion failures. Timeout, cancellation, or an invalid export leaves the saved input files intact. Non-regular files and binary artifacts are not imported; invalid exports report a persistence error. `__pycache__` and `.pyc` files are excluded.
 
 ## Subagents
@@ -69,7 +71,9 @@ Deleting a conversation removes its current workspace. Referenced historical run
 
 Aggregate execution budgets remain unlimited. If the same worker repeats the same failed coding tool call on identical project files three times, the controller marks the run **incomplete** and stops before another model call. Different file contents allow a new attempt. Saved files and failure traces remain inspectable.
 
-This detects repeated failures, not every possible unproductive loop. It does not claim that a successful Python exit proves task correctness.
+Five identical Python executions with identical output and project contents also stop, even without an error marker. Interleaved reads and edits that leave contents unchanged do not bypass this check. `project_edit` rejects identical old/new text. These checks detect exact repetition, not every unproductive loop; intentional repeated measurements may also reach the limit.
+
+The viewer's **Stop task** button cancels a chat turn without deleting it. Cancellation waits for async cleanup, kills and reaps active Python sandboxes, marks unfinished workers interrupted, then releases the controller lock. Saved input files survive; an in-flight execution's unexported changes do not. Follow-up context includes bounded recent tool observations and file names so the agent can explain a stopped attempt. A stop request targets a specific turn; a stale request cannot cancel a newer one.
 
 ## Executor and limits
 
@@ -87,6 +91,8 @@ This creates an explicit new configuration with project tools and the current to
 
 ## Verification
 
-The full suite has 113 passing tests. Coverage includes module imports across executions, edits followed by failing and repaired tests, generated text files, persistence after reopening SQLite, private/learning separation, path and sandbox isolation, worker-copy conflicts, real SDK delegation and merging with a scripted model, cancellation, repeated-failure termination, deletion, and equal starting files for paired evaluation. Browser checks cover file selection, starting/latest snapshots, mobile rendering, and literal rendering of file contents.
+The full suite has 134 passing tests. Coverage includes module imports across executions, edits followed by failing and repaired tests, generated text files, persistence after reopening SQLite, private/learning separation, path and sandbox isolation, worker-copy conflicts, real SDK delegation and merging with a scripted model, cancellation cleanup, stale/early stop requests, stopped-turn follow-up context, caught-error reporting, repeated-failure termination, deletion, and equal starting files for paired evaluation. Browser checks cover file selection, starting/latest snapshots, mobile rendering, and literal rendering of file contents.
 
 A bounded live Crusoe check saved `arithmetic.py`, executed an import, reopened the store, and used a later turn to create and run two unittest cases against the saved module. Both tests passed and the module survived unchanged. The first turn took three model calls; the follow-up took twelve. This verifies the persistence path, not a scheduler benchmark improvement or efficient model behavior. Local evidence is saved in `artifacts/workspace-live-check.json` and `artifacts/project-files-ui-check.json`.
+
+A later trial with Crusoe's `zai-org/GLM-5.3` implemented a smaller tag-normalization task in four model calls and 23.21 seconds. It saved `tags.py` and `test_tags.py`, executed five passing unit tests, and passed five separate controller checks. A structured-output compatibility request also passed. This is one successful trial, not a controlled model comparison or proof of learned improvement. Evidence is saved locally in `artifacts/glm-model-check-summary.json` and `artifacts/glm-simple-task-check.json`. The development workspace was switched to GLM-5.3 as an operator settings change; aggregate budgets and topology were preserved.

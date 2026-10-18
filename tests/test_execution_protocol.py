@@ -41,3 +41,12 @@ def test_explanations_do_not_require_code_execution():
     assert not requests_python_execution("Explain how to run Python code")
     assert not requests_python_execution("Write a three-step release checklist")
     assert requests_python_execution("Please run this Python code")
+
+
+def test_saved_followup_replay_checks_current_request_not_older_execution_instructions():
+    prefix = "Answer the current request in this previously shared conversation. Earlier messages are history.\n"
+    context = {"current_request": "What went wrong? Do not resume.", "previous_messages": [
+        {"role": "human", "content": "Implement and execute a Python scheduler"}]}
+    assert not requests_python_execution(prefix + json.dumps(context))
+    context["current_request"] = "Fix and run the Python tests"
+    assert requests_python_execution(prefix + json.dumps(context))

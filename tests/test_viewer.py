@@ -29,7 +29,7 @@ def test_viewer_reads_complete_history_without_exposing_credentials(tmp_path):
     (None, "127.0.0.1:8765", 403),
     ("http://unrelated.example:8765", "unrelated.example:8765", 403),
 ])
-@pytest.mark.parametrize("endpoint", ["/api/chat", "/api/reflect", "/api/chat/delete"])
+@pytest.mark.parametrize("endpoint", ["/api/chat", "/api/reflect", "/api/chat/delete", "/api/chat/stop"])
 def test_only_same_origin_local_actions_can_start_inference(tmp_path, monkeypatch, origin, host, expected, endpoint):
     calls = []
     def submit(self, payload):
@@ -37,6 +37,7 @@ def test_only_same_origin_local_actions_can_start_inference(tmp_path, monkeypatc
         return {"id": "turn", "thread_id": "thread"}
     monkeypatch.setattr("company.viewer.ChatService.submit", submit)
     monkeypatch.setattr("company.viewer.ChatService.delete", submit)
+    monkeypatch.setattr("company.viewer.ChatService.stop", submit)
     monkeypatch.setattr("company.viewer.ReflectionService.submit", lambda self: submit(self, {}))
     handler = handler_for(tmp_path / "company.sqlite3")
     request = handler.__new__(handler)

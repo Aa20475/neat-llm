@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import PurePosixPath
 
-from company.python_runner import POLICY, sandbox_command
+from company.python_runner import POLICY, report_execution, sandbox_command
 
 MAX_FILES = 128
 MAX_BYTES = 4 * 1024 * 1024
@@ -160,7 +160,7 @@ async def run_project(files: dict, file_path: str, args: list[str] | None = None
         await writer
         (raw, truncated), (stderr, _) = await asyncio.gather(*readers)
     if timed_out:
-        return {"status": "timed_out", "error": "Python exceeded 10 seconds; saved project files are unchanged"}
+        return report_execution({"status": "timed_out", "error": "Python exceeded 10 seconds; saved project files are unchanged"})
     if process.returncode != 0 or truncated:
         return {"status": "error", "error": "Sandbox did not return a complete project snapshot", "stderr": stderr.decode(errors="replace")}
     try:
@@ -169,6 +169,6 @@ async def run_project(files: dict, file_path: str, args: list[str] | None = None
             raise ValueError("Invalid result")
         if "files" in result:
             result["files"] = validate_files(result["files"])
-        return result
+        return report_execution(result)
     except (ValueError, TypeError):
         return {"status": "error", "error": "Sandbox returned invalid project artifacts; saved files are unchanged"}

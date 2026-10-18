@@ -136,6 +136,8 @@ def project_tools(project: Project):
         """Replace exactly one occurrence of old_text in a saved file. Read before editing."""
         def action():
             name = project_path(path)
+            if old_text == new_text:
+                raise ValueError("The edit changes nothing: old_text and new_text are identical. Inspect the failure and change the relevant code.")
             if name not in project.files or not old_text or project.files[name].count(old_text) != 1:
                 raise ValueError("old_text must match exactly once in an existing file; read the current file first")
             project.replace({**project.files, name: project.files[name].replace(old_text, new_text, 1)})
@@ -164,6 +166,8 @@ def project_tools(project: Project):
         not carry across calls. For a quick snippet, code is saved to _scratch.py.
         Optional files adds/replaces project files before execution. Stdlib only,
         no network or host files. Returns exit code, bounded stdout/stderr and changed paths.
+        Exit code zero is not proof of task success; reported_error flags explicit
+        error markers in output (a heuristic). Use assertions and nonzero exits for failures.
         """
         async def action():
             if (file_path is None) == (code is None):

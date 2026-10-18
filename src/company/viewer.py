@@ -50,7 +50,7 @@ def handler_for(db_path: Path):
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            if self.path not in ("/api/chat", "/api/chat/delete", "/api/reflect"):
+            if self.path not in ("/api/chat", "/api/chat/delete", "/api/chat/stop", "/api/reflect"):
                 self.send_error(404)
                 return
             # Only an explicit request from this local UI can start paid inference.
@@ -72,6 +72,8 @@ def handler_for(db_path: Path):
                     result = reflection.submit()
                 elif self.path == "/api/chat/delete":
                     result = chat.delete(payload)
+                elif self.path == "/api/chat/stop":
+                    result = chat.stop(payload)
                 else:
                     result = chat.submit(payload)
                 status = 200 if self.path == "/api/chat/delete" else 202
@@ -100,6 +102,7 @@ def handler_for(db_path: Path):
                     try:
                         if path == "/api/state":
                             payload = snapshot(store)
+                            payload["chat_control"] = chat.control()
                         elif path.startswith("/api/runs/") and len(path.split("/")) == 4:
                             payload = store.replay(path.rsplit("/", 1)[-1])
                         else:

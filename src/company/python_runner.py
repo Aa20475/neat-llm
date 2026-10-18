@@ -3,6 +3,7 @@
 import asyncio
 import json
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 
 
@@ -17,6 +18,25 @@ POLICY = {
     "file_bytes": 1024 * 1024,
     "output_bytes_per_stream": 4000,
 }
+
+
+def report_execution(result: dict) -> dict:
+    """Keep process facts separate from heuristic error reporting and correctness."""
+    result = dict(result)
+    code = result.get("exit_code")
+    result["process_status"] = ("timed_out" if result.get("status") == "timed_out" else
+                                "exited_zero" if code == 0 else "exited_nonzero" if code is not None else "unknown")
+    # A caught exception often prints Error: ... and exits zero. Flag explicit
+    # markers without treating arbitrary stderr (e.g. unittest success) as failure.
+    if result.get("status") == "ok" and code == 0:
+        for stream in ("stdout", "stderr"):
+            for line in result.get(stream, "").splitlines():
+                if re.match(r"^\s*(?:(?:error|fatal|\w+(?:Error|Exception)):\s*\S|"
+                            r"Traceback \(most recent call last\):|FAILED \((?:failures|errors)=)", line, re.I):
+                    result.update(status="error", reported_error={"stream": stream, "line": line[:500], "heuristic": True},
+                                  error="Process exited with code 0 but printed an error marker. Inspect the output; this is a heuristic, not a task correctness verdict.")
+                    return result
+    return result
 
 # This bootstrap runs INSIDE the namespace, before any generated code. Limits
 # are hard limits; generated code cannot raise them again. No preexec_fn is used
@@ -153,10 +173,10 @@ async def run_python(code: str, files: dict[str, str] | None = None) -> dict:
         await process.wait()
         await writer
         (stdout, out_cut), (stderr, err_cut) = await asyncio.gather(*readers)
-    return {
+    return report_execution({
         "status": "timed_out" if timed_out else "ok" if process.returncode == 0 else "error",
         "exit_code": process.returncode, "stdout": stdout, "stderr": stderr,
         "stdout_truncated": out_cut, "stderr_truncated": err_cut,
         **({"note": "No output was produced. Print the result or end with an expression; do not infer an unseen result."}
            if process.returncode == 0 and not stdout and not stderr else {}),
-    }
+    })

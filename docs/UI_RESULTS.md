@@ -13,3 +13,9 @@ Browser checks verified reply-to-trace links, arithmetic tool events, held-out s
 Reading tabs does not start inference. Sending a chat message or pressing Run reflection does. Reflection remains manually triggered; chat does not become learning evidence automatically.
 
 The attempt display was subsequently moved directly below the trigger after its original position below proposals and memory proved difficult to find. The sidebar now counts all attempts, independently of proposal count. Browser verification confirmed all five saved attempts, latest-first ordering, clear duplicate/failure outcomes, expandable records, and links to equivalent proposals on desktop and mobile. This display check made no inference calls.
+
+## Stop and inspect a task
+
+The page header now shows **Stop task** while this viewer owns a running chat turn. Browser checks on desktop and 390px mobile verified cancellation, return to Chat, preservation of files and the reflection-sharing selection, and re-enabled Send after cleanup. The button fills an editable status question without sending it. A fixture follow-up received the stopped task's tool error and saved module; it answered without restarting implementation. The run timeline labels a caught error with **Error in output · exit 0**, distinguishing process termination from task correctness. No browser JavaScript errors or horizontal mobile overflow were observed.
+
+These checks used a temporary database, a scripted agent, and actual sandbox execution, with no paid inference. Evidence is in `artifacts/stop-task-ui-check.json`, `stop-task-desktop.png`, `stop-task-mobile.png`, and `process-error-desktop.png`. The automated suite also covers cancellation cleanup before releasing the controller lock, early/repeated/stale stop requests, and same-origin enforcement.

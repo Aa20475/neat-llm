@@ -213,3 +213,93 @@ def test_delete_cannot_interrupt_running_work_or_cross_controller_lock(tmp_path)
             ChatService(store.path).delete({"thread_id": turn["thread_id"]})
     assert len(store.chat_turns()) == 1
     store.close()
+
+
+def test_stop_preserves_files_trace_and_followup_context_without_resuming_work(tmp_path, monkeypatch):
+    settings = Settings(api_key="test-secret", model="test-model")
+    store = Store(tmp_path / "company.sqlite3")
+    store.initialize(initial_manifest(settings))
+    monkeypatch.setattr(Settings, "load", lambda: settings)
+    started, cleaned = threading.Event(), threading.Event()
+    seen = []
+    class Agent:
+        def __init__(self, project):
+            self.project = project
+
+        async def ainvoke(self, inputs, config):
+            seen.append(inputs)
+            if len(seen) > 1:
+                assert "scheduler.py" in self.project.files
+                assert "Dependency depends not found" in inputs["messages"][-1].content
+                return {"messages": [AIMessage(content="The parser treats depends as a job ID. The task is unfinished.")]}
+            trace = config["callbacks"][0]
+            self.project.replace({"scheduler.py": "print('Error: Dependency depends not found')"})
+            trace.record("tool_finished", trace.root, name="python_execute", output="Error: Dependency depends not found")
+            store.worker_start(trace.run_id, "active-child", trace.root, "general-purpose", True, "Review")
+            try:
+                started.set()
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(.02)
+                trace.record("cleanup_complete", trace.root)
+                cleaned.set()
+
+    monkeypatch.setattr("company.runtime.build_agent", lambda manifest, settings, project: Agent(project))
+    service = ChatService(store.path)
+    turn = service.submit({"message": "Implement and execute a Python scheduler", "learn": True})
+    try:
+        assert started.wait(5)
+        assert service.control() == {"active_turn_id": turn["id"], "stopping": False}
+        assert service.stop({"turn_id": turn["id"]})["status"] == "stopping"
+        service.stop({"turn_id": turn["id"]})  # Idempotent, even during cleanup.
+    finally:
+        service.stop({"turn_id": turn["id"]})
+    assert service.busy.acquire(timeout=5)
+    service.busy.release()
+    assert cleaned.is_set() and service.control()["active_turn_id"] is None
+    saved = store.chat_turns()[0]
+    replay = store.replay(saved["run_id"])
+    assert saved["status"] == replay["run"]["status"] == "interrupted"
+    assert "Stopped by user" in saved["error"]
+    assert all(worker["status"] != "running" for worker in replay["workers"])
+    assert "scheduler.py" in replay["project"]["final_files"]
+    assert any(event["kind"] == "cleanup_complete" for event in replay["events"])
+    assert service.stop({"turn_id": turn["id"]})["status"] == "interrupted"
+    # A status question must not trigger execution repair for the older task.
+    followup = service.submit({"message": "What went wrong? Do not resume yet.", "thread_id": turn["thread_id"], "learn": True})
+    assert service.busy.acquire(timeout=5)
+    service.busy.release()
+    assert len(seen) == 2
+    assert next(t for t in store.chat_turns() if t["id"] == followup["id"])["status"] == "completed"
+    assert store.active()["manifest"]["limits"]["model_calls"] is None
+    store.close()
+
+
+def test_stale_stop_does_not_cancel_new_turn_and_bad_ids_are_rejected(tmp_path, monkeypatch):
+    settings = Settings(api_key="test", model="test-model")
+    store = Store(tmp_path / "company.sqlite3")
+    store.initialize(initial_manifest(settings))
+    previous = store.start_chat_turn("Old task")
+    store.finish_chat_turn(previous["id"], "completed")
+    monkeypatch.setattr(Settings, "load", lambda: settings)
+    started = threading.Event()
+    async def execution(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+    monkeypatch.setattr("company.chat.execute", execution)
+    service = ChatService(store.path)
+    current = service.submit({"message": "New task"})
+    try:
+        assert started.wait(5)
+        assert service.stop({"turn_id": previous["id"]})["status"] == "completed"
+        assert not service.control()["stopping"]
+        for payload in ({}, {"turn_id": "bad"}, {"turn_id": "f" * 32}):
+            with pytest.raises(ValueError):
+                service.stop(payload)
+        with pytest.raises(RuntimeError, match="another controller"):
+            ChatService(store.path).stop({"turn_id": current["id"]})
+    finally:
+        service.stop({"turn_id": current["id"]})
+    assert service.busy.acquire(timeout=5)
+    service.busy.release()
+    store.close()

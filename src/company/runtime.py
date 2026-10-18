@@ -36,12 +36,23 @@ EXECUTION_PROTOCOL = (
     "Prefer implementation and test files over repeatedly rewriting a scratch script. Inspect actual failure output before editing. "
     "Subagents receive copies of your current project. Review their returned workspace ID with project_diff and "
     "accept selected files with project_merge; their changes are not applied automatically. "
+    "An exit code of zero only means the process exited normally: inspect output and reported_error before claiming success. "
+    "Do not repeat an identical execution or an edit that changes nothing; inspect the relevant code and correct the cause. "
     "Your final answer must distinguish observed execution results from untested claims."
 )
 
 
 def requests_python_execution(prompt: str) -> bool:
     """Narrow check for explicit execution requests, not a general correctness judge."""
+    # Shared follow-ups save their context in the prompt for paired replay.
+    # Apply the same execution check when replaying as on the original turn.
+    if prompt.startswith("Answer the current request in this previously shared conversation."):
+        try:
+            request = json.loads(prompt.split("\n", 1)[1])["current_request"]
+            if isinstance(request, str):
+                prompt = request
+        except (ValueError, KeyError, IndexError, TypeError):
+            pass
     if re.match(r"\s*(explain|describe|how|what)\b", prompt, re.I):
         return False
     return bool(re.search(
@@ -77,6 +88,7 @@ class RunTrace(BaseCallbackHandler):
         self.tool_owners: dict[str, str] = {}
         self.tool_arguments = {}
         self.failures = {}
+        self.executions = {}
         self.stall_reason = None
         self.calls = self.completed = self.tool_calls = self.worker_count = 0
         self.input_tokens = self.output_tokens = self.usage_missing = 0
@@ -159,6 +171,8 @@ class RunTrace(BaseCallbackHandler):
             self.link(run_id, parent_run_id)
             if self.violation:
                 raise BudgetExceeded(self.violation)
+            if self.stall_reason:
+                raise NoProgress(self.stall_reason)
             if self.limits["tool_calls"] is not None and self.tool_calls >= self.limits["tool_calls"]:
                 self.deny("tool_calls")
             name = serialized.get("name", "unknown")
@@ -204,7 +218,8 @@ class RunTrace(BaseCallbackHandler):
             name = self.tool_names.get(str(run_id))
             if name in (*PROJECT_TOOLS, "python_execute") and isinstance(value, dict) and value.get("status") in ("error", "timed_out"):
                 fingerprint = hashlib.sha256(json.dumps({"name": name, "arguments": self.tool_arguments.get(str(run_id)),
-                    "workspace": value.get("workspace_digest"), "error": value.get("error") or value.get("stderr") or value.get("persistence_error")}, sort_keys=True).encode()).hexdigest()
+                    "workspace": value.get("workspace_digest"), "error": value.get("error") or value.get("stderr") or value.get("persistence_error"),
+                    "reported_error": value.get("reported_error")}, sort_keys=True).encode()).hexdigest()
                 key = (self.tool_owners.get(str(run_id)), fingerprint)
                 self.failures[key] = self.failures.get(key, 0) + 1
                 if self.failures[key] >= 3:
@@ -213,6 +228,15 @@ class RunTrace(BaseCallbackHandler):
             if self.tool_names.get(str(run_id)) == "python_execute":
                 if isinstance(value, dict) and value.get("status") == "ok":
                     self.python_successes += 1
+                    if value.get("workspace_digest"):
+                        fingerprint = hashlib.sha256(json.dumps({"arguments": self.tool_arguments.get(str(run_id)),
+                            "workspace": value["workspace_digest"], "stdout": value.get("stdout"),
+                            "stderr": value.get("stderr"), "exit_code": value.get("exit_code")}, sort_keys=True).encode()).hexdigest()
+                        key = (self.tool_owners.get(str(run_id)), fingerprint)
+                        self.executions[key] = self.executions.get(key, 0) + 1
+                        if self.executions[key] >= 5:
+                            self.stall_reason = "Stopped after five identical Python executions on unchanged project files with identical output. Inspect the saved files before continuing."
+                            self.record("no_progress", self.tool_owners.get(str(run_id), self.root), reason=self.stall_reason, tool=name)
             self.record("tool_finished", self.tool_owners.get(str(run_id), self.root), call_id=str(run_id), name=self.tool_names.get(str(run_id)), output=getattr(output, "content", output))
             if child := self.task_workers.get(str(run_id)):
                 self.store.worker_finish(child, "completed")
@@ -279,7 +303,8 @@ def build_agent(manifest: dict, settings: Settings, project: Project | None = No
 
 async def execute(store: Store, settings: Settings, *, task_id: str, split: str, prompt: str, expected,
                   require_delegation: bool = False, version_id: str | None = None, budget=None, phase="execution",
-                  ungraded: bool = False, conversation=None, chat_turn_id: str | None = None, initial_files: dict | None = None) -> dict:
+                  ungraded: bool = False, conversation=None, chat_turn_id: str | None = None, initial_files: dict | None = None,
+                  current_request: str | None = None) -> dict:
     """Caller owns the controller lock. The evaluator's expected value never enters the agent."""
     run = store.start_run(task_id, split, prompt, version_id=version_id)
     if chat_turn_id:
@@ -294,7 +319,7 @@ async def execute(store: Store, settings: Settings, *, task_id: str, split: str,
         trace.record("runtime_config", trace.root, request_interval_seconds=2,
                      filesystem="project_snapshot_v1", readable_paths=sorted(worker_files(run["manifest"])),
                      project_paths=sorted(files))
-        needs_execution = "python_execute" in run["manifest"]["tools"]["names"] and requests_python_execution(prompt)
+        needs_execution = "python_execute" in run["manifest"]["tools"]["names"] and requests_python_execution(current_request if current_request is not None else prompt)
         async def work():
             inputs = {"messages": [*(conversation or []), HumanMessage(content=prompt)], "files": worker_files(run["manifest"])}
             # A protocol repair is distinct from a run-wide budget: if the model
@@ -337,6 +362,7 @@ async def execute(store: Store, settings: Settings, *, task_id: str, split: str,
         status, error = "timed_out", "Run exceeded its wall-clock limit"
     except asyncio.CancelledError:
         status, error = "interrupted", "Controller was interrupted"
+        trace.record("run_interrupted", trace.root, reason="Execution cancelled; saved files and trace preserved")
         raise
     except Exception as exc:
         status = "budget_exceeded" if trace.violation else "failed"

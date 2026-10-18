@@ -190,6 +190,53 @@ def test_repeated_failure_stops_without_a_call_budget_and_edits_allow_progress(t
     store.close()
 
 
+def test_caught_exception_is_reported_and_stops_repetition_despite_reads_and_noop_edits(tmp_path, monkeypatch):
+    store = Store(tmp_path / 'company.sqlite3')
+    settings = Settings(api_key='test', model='test-model')
+    store.initialize(initial_manifest(settings))
+    class Agent:
+        def __init__(self, project):
+            self.project = project
+        async def ainvoke(self, inputs, config):
+            trace = config['callbacks'][0]
+            source = "try:\n    raise ValueError('Dependency depends not found')\nexcept Exception as error:\n    print(f'Error: {error}')\n"
+            self.project.replace({'scheduler.py': source})
+            tools = project_tools(self.project)
+            for i in range(3):
+                read = await tools['project_read'].ainvoke({'path': 'scheduler.py'}, config=config)
+                assert read['status'] == 'ok'
+                if i:
+                    edit = await tools['project_edit'].ainvoke({'path': 'scheduler.py', 'old_text': source, 'new_text': source}, config=config)
+                    assert edit['status'] == 'error' and 'changes nothing' in edit['error']
+                result = await tools['python_execute'].ainvoke({'file_path': 'scheduler.py'}, config=config)
+                assert result['exit_code'] == 0 and result['process_status'] == 'exited_zero'
+                assert result['status'] == 'error' and result['reported_error']['heuristic']
+                assert result['reported_error']['line'] == 'Error: Dependency depends not found'
+            assert trace.python_successes == 0
+            trace.on_chat_model_start({}, [], run_id=uuid4())
+            raise AssertionError('Must stop before another paid call')
+    monkeypatch.setattr('company.runtime.build_agent', lambda manifest, settings, project: Agent(project))
+    result = asyncio.run(execute(store, settings, task_id='printed-error', split='learning', prompt='Run Python tests', expected=None, ungraded=True))
+    assert result['run']['status'] == 'incomplete'
+    assert 'three times' in result['run']['error']
+    assert 'scheduler.py' in result['project']['final_files']
+    store.close()
+
+
+@pytest.mark.parametrize('progress', ['none', 'files', 'output'])
+def test_repeated_zero_exit_with_identical_output_is_bounded_but_progress_is_allowed(tmp_path, progress):
+    store = Store(tmp_path / 'company.sqlite3')
+    store.initialize(initial_manifest(Settings(api_key='test', model='test-model')))
+    trace = RunTrace(store, store.start_run('repeat', 'learning', 'Inspect results'))
+    for i in range(5):
+        call = uuid4()
+        trace.on_tool_start({'name': 'python_execute'}, '', run_id=call, inputs={'file_path': 'check.py'})
+        trace.on_tool_end({'status': 'ok', 'exit_code': 0, 'stdout': str(i) if progress == 'output' else 'unchanged',
+                           'workspace_digest': str(i) if progress == 'files' else 'unchanged'}, run_id=call)
+    assert bool(trace.stall_reason) == (progress == 'none')
+    store.close()
+
+
 def test_workspace_upgrade_preserves_old_versions_and_unlimited_configuration(tmp_path):
     store = Store(tmp_path / 'company.sqlite3')
     old = initial_manifest(Settings(api_key='test', model='test-model'))

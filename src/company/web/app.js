@@ -9,9 +9,19 @@ const badge = (status, text = statusLabels[status] || status) => `<span class="b
 const date = value => value ? new Date(value).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"}) : "—";
 const empty = (title, text = "") => `<div class="empty"><strong>${esc(title)}</strong>${esc(text)}</div>`;
 const pre = value => `<pre>${esc(pretty(value))}</pre>`;
-let state, replay, selectedRun, selectedWorker = null, selectedProposal, currentView = "runs", refreshing = false, selectedThread, chatSubmitting = false, reflectionSubmitting = false, chatDeleting = false;
-function companyBusy() {return state.runs.some(run => run.status === "running") || state.reflections.some(row => row.status === "running") || (state.actions || []).some(row => row.status === "running") || (state.chat_turns || []).some(row => row.status === "running");}
+let state, replay, selectedRun, selectedWorker = null, selectedProposal, currentView = "runs", refreshing = false, selectedThread, chatSubmitting = false, reflectionSubmitting = false, chatDeleting = false, chatStopping = false, stoppedTurn;
+function companyBusy() {return !!state.chat_control?.active_turn_id || state.runs.some(run => run.status === "running") || state.reflections.some(row => row.status === "running") || (state.actions || []).some(row => row.status === "running") || (state.chat_turns || []).some(row => row.status === "running");}
 function runStatus(run) {return run.status === "completed" && run.grade ? (run.grade.passed ? "pass" : "fail") : run.status;}
+function toolOutcome(event) {
+  if (event.kind !== "tool_finished") return "";
+  let result = event.payload.output;
+  try {if (typeof result === "string") result = JSON.parse(result);} catch {return "";}
+  if (!result || typeof result !== "object") return "";
+  if (result.reported_error) return badge("failed", `Error in output · exit ${result.exit_code}`);
+  if (["error","timed_out","unavailable"].includes(result.status)) return badge("failed", result.exit_code != null ? `Failed · exit ${result.exit_code}` : result.status.replaceAll("_", " "));
+  if (event.payload.name === "python_execute" && result.status === "ok") return badge("ungraded", "Process exited · unverified");
+  return "";
+}
 async function fetchJSON(path) {const response = await fetch(path); if (!response.ok) throw new Error(`Could not read local records (${response.status}). Initialize the organization first.`); return response.json();}
 function renderStats() {
   const scored = state.runs.filter(run => run.grade && ["learning","validation"].includes(run.split));
@@ -61,8 +71,8 @@ function renderReplay() {
   $("#graph").innerHTML = graph + "</svg>";
   document.querySelectorAll("[data-worker]").forEach(node => {const select = () => {selectedWorker = node.dataset.worker; renderReplay();}; node.onclick = select; node.onkeydown = event => {if (["Enter"," "].includes(event.key)) {event.preventDefault(); select();}};});
   $("#run-summary").innerHTML = `${badge(runStatus(run))}<span>${num(run.usage?.model_calls)} model calls</span><span>${num(run.usage?.input_tokens)} in / ${num(run.usage?.output_tokens)} out</span><span>${run.usage?.elapsed_seconds ?? "…"}s</span><span>${run.usage?.complete ? "Usage complete" : "Usage partial / pending"}</span>`;
-  $("#timeline").innerHTML = events.filter(event => !selectedWorker || event.worker_id === selectedWorker).map(event => `<button class="event ${esc(event.kind)}" data-event="${event.seq}"><span class="event-dot"></span><span class="event-main">${esc(event.kind.replaceAll("_"," "))}${event.payload.name ? ` · <span class="mono">${esc(event.payload.name)}</span>` : ""}<div class="event-caption">${esc(event.worker_id?.split(":").slice(1).join(":") || "controller")}${event.payload.call_number ? ` · call ${event.payload.call_number}` : ""}</div></span><span class="event-time">${date(event.timestamp)}</span></button>`).join("") || empty("No events yet");
-  document.querySelectorAll("[data-event]").forEach(button => button.onclick = () => {const event = events.find(item => item.seq === Number(button.dataset.event)); $("#inspect-kind").textContent = "EVENT"; $("#inspector").innerHTML = `<div class="inspect-body"><h3 class="inspect-title">${esc(event.kind.replaceAll("_"," "))}</h3><p>Event ${event.seq} · ${date(event.timestamp)}</p>${pre(event.payload)}</div>`;});
+  $("#timeline").innerHTML = events.filter(event => !selectedWorker || event.worker_id === selectedWorker).map(event => `<button class="event ${esc(event.kind)}" data-event="${event.seq}"><span class="event-dot"></span><span class="event-main">${esc(event.kind.replaceAll("_"," "))}${event.payload.name ? ` · <span class="mono">${esc(event.payload.name)}</span>` : ""}<div class="event-caption">${esc(event.worker_id?.split(":").slice(1).join(":") || "controller")}${event.payload.call_number ? ` · call ${event.payload.call_number}` : ""}</div>${toolOutcome(event)}</span><span class="event-time">${date(event.timestamp)}</span></button>`).join("") || empty("No events yet");
+  document.querySelectorAll("[data-event]").forEach(button => button.onclick = () => {const event = events.find(item => item.seq === Number(button.dataset.event)); $("#inspect-kind").textContent = "EVENT"; $("#inspector").innerHTML = `<div class="inspect-body"><h3 class="inspect-title">${esc(event.kind.replaceAll("_"," "))}</h3><p>Event ${event.seq} · ${date(event.timestamp)}</p>${toolOutcome(event)}${pre(event.payload)}</div>`;});
   const worker = workers.find(item => item.id === selectedWorker);
   $("#inspect-kind").textContent = worker ? "WORKER" : "RUN";
   $("#inspector").innerHTML = worker ? `<div class="inspect-body"><h3 class="inspect-title">${esc(worker.role)}</h3>${badge(worker.status)}<div class="inspect-label">Lifetime</div><p>${worker.temporary ? "Temporary instance. A future reflection may propose retaining its role." : "Fresh instance of a saved role."}</p><div class="inspect-label">Assignment</div>${pre(worker.task)}<div class="inspect-label">Configuration</div><p>Inherited from pinned version ${short(run.version_id)}.</p><details class="details"><summary>Prompt, skills & memory</summary>${pre({prompts:organization.prompts,skills:organization.skills,memory:organization.task_memory})}</details></div>` : `<div class="inspect-body"><h3 class="inspect-title">Task result</h3>${badge(runStatus(run))}<div class="inspect-label">Independent check</div><p>${esc(run.grade?.reason || run.error || (run.status === "completed" ? "Conversational response · ungraded" : "Run is in progress"))}</p><div class="inspect-label">Final output</div>${pre(run.output ?? "No final output recorded.")}<details class="details"><summary>Task instructions</summary>${pre(run.prompt)}</details><details class="details"><summary>Saved configuration</summary>${pre(organization)}</details><div class="inspect-label">Run ID</div><p class="mono">${esc(run.id)}</p></div>`;
@@ -169,7 +179,7 @@ function renderChat() {
   if (selectedThread === undefined || (selectedThread && !threads.some(row => row.id === selectedThread))) selectedThread = threads[0]?.id || null;
   const active = state.active;
   $("#chat-title").textContent = threads.find(row => row.id === selectedThread)?.title || "New conversation";
-  $("#chat-active").textContent = `${active.manifest.label} · ${active.manifest.topology.roles.length} saved roles · ${active.manifest.limits.model_calls == null ? "unlimited model calls" : `${active.manifest.limits.model_calls} model calls`}`;
+  $("#chat-active").textContent = `${active.manifest.label} · ${active.manifest.inference.model.split("/").pop()} · ${active.manifest.topology.roles.length} saved roles · ${active.manifest.limits.model_calls == null ? "unlimited model calls" : `${active.manifest.limits.model_calls} model calls`}`;
   $("#chat-threads").innerHTML = threads.map(thread => `<button class="proposal-card ${thread.id === selectedThread ? "selected" : ""}" data-thread="${esc(thread.id)}"><h3>${esc(thread.title)}</h3><span class="small muted">${date(thread.created_at)}</span></button>`).join("") || empty("Your first conversation", "Give the active team a task to begin.");
   document.querySelectorAll("[data-thread]").forEach(button => button.onclick = () => {selectedThread = button.dataset.thread; renderChat();});
   const messages = $("#chat-messages"), oldTop = messages.scrollTop;
@@ -180,7 +190,15 @@ function renderChat() {
     return `<article class="chat-message from-user"><div class="chat-message-label">You</div><div class="chat-text">${esc(turn.prompt)}</div></article><article class="chat-message from-team"><div class="chat-message-label">${esc(label)} ${turn.version_id ? `<span class="mono">${short(turn.version_id)}</span>` : ""} ${badge(turn.status, turn.status === "completed" ? "Response returned · unverified" : undefined)}</div><div class="chat-text">${esc(response)}</div>${turn.error && turn.output ? `<p>${esc(turn.error)}</p>` : ""}<div class="chat-meta">${turn.usage ? `${num((turn.usage.input_tokens || 0) + (turn.usage.output_tokens || 0))} tokens · ${num(turn.usage.model_calls)} calls` : ""}${turn.run_id ? `<button class="text-button" data-result-run="${esc(turn.run_id)}">View workers & trace ↗</button>` : ""}</div></article>`;
   }).join("") || empty("One message. The whole active team.", "Ask for a calculation, give it an order-normalization task, or request a delegated check. Open the trace to see what it actually did.");
   messages.scrollTop = atBottom ? messages.scrollHeight : oldTop;
-  const busy = companyBusy() || chatSubmitting || reflectionSubmitting || chatDeleting;
+  const busy = companyBusy() || chatSubmitting || reflectionSubmitting || chatDeleting || chatStopping;
+  $("#stop-task").hidden = !state.chat_control?.active_turn_id;
+  $("#stop-task").disabled = chatStopping || !!state.chat_control?.stopping;
+  $("#stop-task").textContent = chatStopping || state.chat_control?.stopping ? "Stopping…" : "■ Stop task";
+  if (stoppedTurn && turns.find(turn => turn.id === stoppedTurn)?.status !== "running" && state.chat_control?.active_turn_id !== stoppedTurn) {
+    $("#chat-notice").textContent = "Task stopped. Saved files and recent tool results are available for your follow-up.";
+    $("#chat-notice").hidden = false;
+    stoppedTurn = null;
+  }
   $("#chat-send").disabled = busy;
   $("#chat-send").textContent = busy ? "Working…" : "Send ↗";
   $("#delete-chat").disabled = !selectedThread || busy;
@@ -200,6 +218,29 @@ async function refresh() {
 }
 document.querySelectorAll("[data-view]").forEach(button => button.onclick = () => {currentView = button.dataset.view; document.querySelectorAll("[data-view]").forEach(item => item.classList.toggle("selected",item === button)); for (const view of ["chat","runs","reflection","versions"]) $(`#${view}-view`).hidden = view !== currentView; $("#page-title").textContent = {chat:"Put your team to work.",runs:"Watch the work happen.",reflection:"Learning, with receipts.",versions:"Keep what works."}[currentView]; $("#page-subtitle").textContent = {chat:"A conversation with the active organization, backed by real execution.",runs:"A saved organization. Fresh workers. A trace you can inspect.",reflection:"Every proposal has evidence, a comparison, and a decision.",versions:"The exact configuration that starts the next run."}[currentView];});
 $("#new-chat").onclick = () => {selectedThread = null; $("#chat-notice").hidden = true; renderChat(); $("#chat-input").focus();};
+$("#stop-task").onclick = async () => {
+  const turnId = state.chat_control?.active_turn_id;
+  if (!turnId || chatStopping || state.chat_control?.stopping) return;
+  const turn = state.chat_turns.find(row => row.id === turnId);
+  chatStopping = true; $("#chat-error").hidden = true; renderChat();
+  try {
+    const response = await fetch("/api/chat/stop", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({turn_id:turnId})});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Could not stop task (${response.status})`);
+    if (turn) {
+      selectedThread = turn.thread_id;
+      $("#chat-learn").checked = state.runs.find(row => row.id === turn.run_id)?.split === "learning";
+    }
+    document.querySelector('[data-view="chat"]').click();
+    stoppedTurn = result.status === "stopping" || result.status === "interrupted" ? turnId : null;
+    $("#chat-notice").textContent = stoppedTurn ? "Stopping the task and saving its state…" : "This task already finished. You can send a follow-up.";
+    $("#chat-notice").hidden = false;
+    if (!$("#chat-input").value.trim()) $("#chat-input").value = "What went wrong? Explain your recent tool results and what remains unfinished. Do not resume the task yet.";
+    $("#chat-input").focus();
+    await refresh();
+  } catch(error) {$("#chat-error").hidden = false; $("#chat-error").textContent = error.message; document.querySelector('[data-view="chat"]').click();}
+  finally {chatStopping = false; renderChat(); renderReflectionAction();}
+};
 $("#delete-chat").onclick = async () => {
   if (!selectedThread || chatDeleting || chatSubmitting || reflectionSubmitting || companyBusy()) return;
   const threadId = selectedThread;
@@ -220,7 +261,7 @@ $("#delete-chat").onclick = async () => {
 $("#chat-form").onsubmit = async event => {
   event.preventDefault();
   const message = $("#chat-input").value.trim();
-  if (!message || chatSubmitting || reflectionSubmitting || chatDeleting || companyBusy()) return;
+  if (!message || chatSubmitting || reflectionSubmitting || chatDeleting || chatStopping || companyBusy()) return;
   chatSubmitting = true; $("#chat-error").hidden = true; $("#chat-notice").hidden = true; renderChat();
   try {
     const response = await fetch("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({message, thread_id:selectedThread, learn:$("#chat-learn").checked})});
