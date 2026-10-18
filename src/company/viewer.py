@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlparse
 
 from company.config import PROJECT_ROOT
 from company.actions import ReflectionService
+from company.activity import recent_activity
 from company.chat import ChatService
 from company.store import Store
 
@@ -41,6 +42,9 @@ def snapshot(store: Store) -> dict:
             result[table] = rows
     if "chat_turns" in tables:
         result["chat_turns"] = store.chat_turns()
+        for turn in result["chat_turns"]:
+            if turn["status"] == "running":
+                turn["activity"] = recent_activity(store, turn["run_id"]) if turn["run_id"] else []
     return result
 
 

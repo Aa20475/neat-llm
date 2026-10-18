@@ -174,6 +174,20 @@ function renderVersions() {
   }).join("") || empty("No final audit yet", "Freeze a configuration before opening the held-out suite.");
   documentQueryResultButtons();
 }
+function chatActivity(turn) {
+  const [latest, ...earlier] = turn.activity || [];
+  const stopping = state.chat_control?.active_turn_id === turn.id && (state.chat_control?.stopping || chatStopping);
+  return `<div class="chat-activity ${latest?.tone === "error" ? "activity-error" : ""}"><div role="status" aria-live="polite" aria-atomic="true"><div class="activity-heading"><span class="live-dot" aria-hidden="true"></span>${esc(stopping ? "Stopping task…" : latest?.summary || "Starting the team…")}</div><div class="activity-detail">${esc(latest?.worker || "Generalist")}${latest?.detail ? ` · ${esc(latest.detail)}` : ""}</div></div><div class="activity-timing" data-activity-at="${esc(latest?.timestamp || turn.created_at)}" data-task-start="${esc(turn.created_at)}"></div>${earlier.length ? `<ul class="activity-recent">${earlier.reverse().map(event => `<li><time>${date(event.timestamp)}</time><span>${esc(event.worker)} · ${esc(event.summary)}${event.detail ? ` · ${esc(event.detail)}` : ""}</span></li>`).join("")}</ul>` : ""}</div>`;
+}
+function updateActivityTimes() {
+  const secondsSince = value => Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000) || 0);
+  const duration = seconds => seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  document.querySelectorAll("[data-activity-at]").forEach(node => {
+    const age = secondsSince(node.dataset.activityAt);
+    node.textContent = `Last event ${age ? `${duration(age)} ago` : "just now"} · ${duration(secondsSince(node.dataset.taskStart))} elapsed`;
+    node.classList.toggle("activity-quiet", age >= 30);
+  });
+}
 function renderChat() {
   const threads = state.chat_threads || [], turns = state.chat_turns || [];
   if (selectedThread === undefined || (selectedThread && !threads.some(row => row.id === selectedThread))) selectedThread = threads[0]?.id || null;
@@ -186,8 +200,8 @@ function renderChat() {
   const atBottom = messages.scrollHeight - oldTop - messages.clientHeight < 60;
   messages.innerHTML = turns.filter(turn => turn.thread_id === selectedThread).map(turn => {
     const label = state.versions.find(version => version.id === turn.version_id)?.manifest.label || "Active team";
-    const response = turn.status === "running" ? "The team is working…" : turn.output || turn.error || "No response recorded.";
-    return `<article class="chat-message from-user"><div class="chat-message-label">You</div><div class="chat-text">${esc(turn.prompt)}</div></article><article class="chat-message from-team"><div class="chat-message-label">${esc(label)} ${turn.version_id ? `<span class="mono">${short(turn.version_id)}</span>` : ""} ${badge(turn.status, turn.status === "completed" ? "Response returned · unverified" : undefined)}</div><div class="chat-text">${esc(response)}</div>${turn.error && turn.output ? `<p>${esc(turn.error)}</p>` : ""}<div class="chat-meta">${turn.usage ? `${num((turn.usage.input_tokens || 0) + (turn.usage.output_tokens || 0))} tokens · ${num(turn.usage.model_calls)} calls` : ""}${turn.run_id ? `<button class="text-button" data-result-run="${esc(turn.run_id)}">View workers & trace ↗</button>` : ""}</div></article>`;
+    const response = turn.status === "running" ? chatActivity(turn) : `<div class="chat-text">${esc(turn.output || turn.error || "No response recorded.")}</div>`;
+    return `<article class="chat-message from-user"><div class="chat-message-label">You</div><div class="chat-text">${esc(turn.prompt)}</div></article><article class="chat-message from-team"><div class="chat-message-label">${esc(label)} ${turn.version_id ? `<span class="mono">${short(turn.version_id)}</span>` : ""} ${badge(turn.status, turn.status === "completed" ? "Response returned · unverified" : undefined)}</div>${response}${turn.error && turn.output ? `<p>${esc(turn.error)}</p>` : ""}<div class="chat-meta">${turn.usage ? `${num((turn.usage.input_tokens || 0) + (turn.usage.output_tokens || 0))} tokens · ${num(turn.usage.model_calls)} calls` : ""}${turn.run_id ? `<button class="text-button" data-result-run="${esc(turn.run_id)}">View workers & trace ↗</button>` : ""}</div></article>`;
   }).join("") || empty("One message. The whole active team.", "Ask for a calculation, give it an order-normalization task, or request a delegated check. Open the trace to see what it actually did.");
   messages.scrollTop = atBottom ? messages.scrollHeight : oldTop;
   const busy = companyBusy() || chatSubmitting || reflectionSubmitting || chatDeleting || chatStopping;
@@ -205,6 +219,7 @@ function renderChat() {
   $("#delete-chat").textContent = chatDeleting ? "Deleting…" : "Delete conversation";
   $("#delete-chat").title = busy ? "Wait for the current task or reflection to finish" : "Remove this conversation and exclude its tasks from future reflection";
   documentQueryResultButtons();
+  updateActivityTimes();
 }
 async function refresh() {
   if (refreshing) return; refreshing = true;
@@ -289,4 +304,4 @@ $("#refresh").onclick = refresh; $("#split-filter").onchange = renderRuns;
 $("#project-stage").onchange = renderProject;
 $("#clear-worker").onclick = () => {selectedWorker = null; if(replay) renderReplay();};
 $("#download").onclick = () => {if(!replay) return; const url = URL.createObjectURL(new Blob([JSON.stringify(replay,null,2)],{type:"application/json"})); const a = document.createElement("a"); a.href = url; a.download = `run-${replay.run.id}.json`; a.click(); URL.revokeObjectURL(url);};
-refresh(); setInterval(refresh, 5000);
+refresh(); setInterval(refresh, 5000); setInterval(updateActivityTimes, 1000);
