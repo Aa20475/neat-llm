@@ -75,6 +75,8 @@ class Store:
                 id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES chat_threads(id),
                 created_at TEXT NOT NULL, prompt TEXT NOT NULL, status TEXT NOT NULL,
                 run_id TEXT REFERENCES runs(id), error TEXT);
+            CREATE TABLE IF NOT EXISTS learning_exclusions (
+                run_id TEXT PRIMARY KEY REFERENCES runs(id), excluded_at TEXT NOT NULL, reason TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS actions (
                 id TEXT PRIMARY KEY, created_at TEXT NOT NULL, kind TEXT NOT NULL,
                 status TEXT NOT NULL, result TEXT, error TEXT);
@@ -202,7 +204,9 @@ class Store:
                     status, None if status == "completed" else "Previous controller exited; send a new message to continue", row["id"]))
 
     def history(self) -> list[dict]:
-        rows = self.db.execute("SELECT id,version_id,generation,task_id,split,started_at,status,grade,usage FROM runs ORDER BY started_at DESC").fetchall()
+        rows = self.db.execute("SELECT id,version_id,generation,task_id,split,started_at,status,grade,usage,"
+                               "EXISTS(SELECT 1 FROM learning_exclusions e WHERE e.run_id=runs.id) AS reflection_excluded "
+                               "FROM runs ORDER BY started_at DESC").fetchall()
         return [self._decode(dict(row), ("grade", "usage")) for row in rows]
 
     @staticmethod
@@ -243,6 +247,53 @@ class Store:
         with self._lock, self.db:
             self.db.execute("INSERT INTO actions VALUES (?,?,?,?,?,?)", (action_id, now(), kind, "running", None, None))
         return action_id
+
+    def delete_chat_thread(self, thread_id: str) -> dict:
+        """Caller holds the controller lock. Preserve evidence referenced by saved experiments."""
+        with self._lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            if not self.db.execute("SELECT 1 FROM chat_threads WHERE id=?", (thread_id,)).fetchone():
+                raise ValueError("Unknown conversation")
+            turns = self.db.execute("SELECT run_id,status FROM chat_turns WHERE thread_id=?", (thread_id,)).fetchall()
+            run_ids = {row["run_id"] for row in turns if row["run_id"]}
+            if any(row["status"] == "running" for row in turns) or any(
+                self.db.execute("SELECT 1 FROM runs WHERE id=? AND status='running'", (run_id,)).fetchone()
+                for run_id in run_ids
+            ):
+                raise RuntimeError("Wait for this conversation's task to finish before deleting it")
+            referenced = set()
+            def collect(value):
+                if isinstance(value, str):
+                    if value in run_ids:
+                        referenced.add(value)
+                elif isinstance(value, list):
+                    for item in value:
+                        collect(item)
+                elif isinstance(value, dict):
+                    for item in value.values():
+                        collect(item)
+            for table, fields in (("reflections", ("evidence_ids",)), ("proposals", ("document", "evaluation")),
+                                  ("reflection_memory", ("evidence",)), ("audits", ("plan", "report")),
+                                  ("actions", ("result",))):
+                for row in self.db.execute(f"SELECT {','.join(fields)} FROM {table}"):
+                    for value in row:
+                        if value:
+                            collect(json.loads(value))
+            referenced.update(row[0] for row in self.db.execute(
+                "SELECT run_id FROM chat_turns WHERE thread_id<>? AND run_id IS NOT NULL", (thread_id,)))
+            retained = run_ids & referenced
+            self.db.execute("DELETE FROM chat_turns WHERE thread_id=?", (thread_id,))
+            self.db.execute("DELETE FROM chat_threads WHERE id=?", (thread_id,))
+            for run_id in retained:
+                self.db.execute("INSERT OR IGNORE INTO learning_exclusions VALUES (?,?,?)", (
+                    run_id, now(), "Conversation deleted; retained only as historical evidence"))
+            for run_id in run_ids - retained:
+                self.db.execute("DELETE FROM events WHERE run_id=?", (run_id,))
+                self.db.execute("DELETE FROM workers WHERE run_id=?", (run_id,))
+                self.db.execute("DELETE FROM learning_exclusions WHERE run_id=?", (run_id,))
+                self.db.execute("DELETE FROM runs WHERE id=?", (run_id,))
+            return {"thread_id": thread_id, "deleted_turns": len(turns), "deleted_runs": len(run_ids - retained),
+                    "retained_evidence_runs": len(retained)}
 
     def finish_action(self, action_id: str, status: str, result=None, error=None):
         with self._lock, self.db:

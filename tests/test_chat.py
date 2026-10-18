@@ -160,3 +160,52 @@ def test_shared_followup_keeps_task_in_saved_replay_without_private_context(tmp_
     assert turn["prompt"] == "Do it" and turn["status"] == "completed"
     assert "Python scheduler" in store.replay(turn["run_id"])["run"]["prompt"]
     store.close()
+
+
+@pytest.mark.parametrize("reference", [None, "reflection", "audit"])
+def test_delete_conversation_removes_traces_or_preserves_referenced_evidence(tmp_path, reference):
+    store = Store(tmp_path / "company.sqlite3")
+    original = store.initialize(initial_manifest(Settings(api_key="test", model="test-model")))
+    turn = store.start_chat_turn("Delete this task")
+    run = store.start_run("task-delete", "learning", "Delete this task")
+    store.link_chat_run(turn["id"], run["id"])
+    store.worker_start(run["id"], "child", run["id"] + ":root", "general-purpose", True, "Bounded check")
+    store.finish(run["id"], "completed", "Answer", None, {})
+    store.finish_chat_turn(turn["id"], "completed")
+    other = store.start_chat_turn("Keep this conversation")
+    store.finish_chat_turn(other["id"], "failed", "Fixture without run")
+    if reference == "reflection":
+        saved = store.start_reflection([run["id"]], [])
+        store.finish_reflection(saved["id"], "no_change", {}, {"no_change": True, "reason": "Fixture"})
+    elif reference == "audit":
+        saved = store.start_audit("fixture-audit", {"source_run_id": run["id"]})
+        store.update_audit(saved, "completed", {"run_ids": [run["id"]]})
+    result = ChatService(store.path).delete({"thread_id": turn["thread_id"]})
+    assert result["deleted_turns"] == 1 and result["deleted_runs"] == (0 if reference else 1)
+    assert result["retained_evidence_runs"] == (1 if reference else 0)
+    assert store.chat_turns(turn["thread_id"]) == [] and len(store.chat_turns(other["thread_id"])) == 1
+    assert store.db.execute("SELECT id FROM chat_threads").fetchone()[0] == other["thread_id"]
+    assert learning_evidence(store, original["version_id"]) == []
+    assert store.active() == original and store.db.execute("PRAGMA foreign_key_check").fetchall() == []
+    if reference:
+        assert store.replay(run["id"])["run"]["output"] == "Answer"
+        assert store.history()[0]["reflection_excluded"] == 1
+    else:
+        for table in ("runs", "workers", "events", "learning_exclusions"):
+            assert store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    with pytest.raises(ValueError, match="Unknown conversation"):
+        ChatService(store.path).delete({"thread_id": turn["thread_id"]})
+    store.close()
+
+
+def test_delete_cannot_interrupt_running_work_or_cross_controller_lock(tmp_path):
+    store = Store(tmp_path / "company.sqlite3")
+    store.initialize(initial_manifest(Settings(api_key="test", model="test-model")))
+    turn = store.start_chat_turn("Still running")
+    with store.controller():
+        with pytest.raises(RuntimeError, match="finish"):
+            store.delete_chat_thread(turn["thread_id"])
+        with pytest.raises(RuntimeError, match="Another controller"):
+            ChatService(store.path).delete({"thread_id": turn["thread_id"]})
+    assert len(store.chat_turns()) == 1
+    store.close()

@@ -34,6 +34,20 @@ class ChatService:
         self.db_path = db_path
         self.busy = threading.Lock()
 
+    def delete(self, payload):
+        if not isinstance(payload, dict) or set(payload) != {"thread_id"}:
+            raise ValueError("Expected a conversation ID")
+        thread_id = payload["thread_id"]
+        if not isinstance(thread_id, str) or len(thread_id) != 32:
+            raise ValueError("Invalid conversation ID")
+        store = Store(self.db_path)
+        try:
+            with store.controller():
+                store.recover_interrupted()
+                return store.delete_chat_thread(thread_id)
+        finally:
+            store.close()
+
     def submit(self, payload):
         if not isinstance(payload, dict) or set(payload) - {"message", "thread_id", "learn"}:
             raise ValueError("Expected a message and optional conversation ID")

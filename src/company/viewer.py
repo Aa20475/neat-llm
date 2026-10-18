@@ -50,7 +50,7 @@ def handler_for(db_path: Path):
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            if self.path not in ("/api/chat", "/api/reflect"):
+            if self.path not in ("/api/chat", "/api/chat/delete", "/api/reflect"):
                 self.send_error(404)
                 return
             # Only an explicit request from this local UI can start paid inference.
@@ -70,9 +70,11 @@ def handler_for(db_path: Path):
                     if payload != {}:
                         raise ValueError("Reflection uses the active version and fixed policy; no overrides accepted")
                     result = reflection.submit()
+                elif self.path == "/api/chat/delete":
+                    result = chat.delete(payload)
                 else:
                     result = chat.submit(payload)
-                status = 202
+                status = 200 if self.path == "/api/chat/delete" else 202
             except (ValueError, UnicodeError) as error:
                 result, status = {"error": str(error)}, 400
             except RuntimeError as error:

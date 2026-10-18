@@ -28,6 +28,8 @@
       <div class="chat-layout">
         <section class="panel"><div class="panel-heading"><h3>Conversations</h3><button id="new-chat" class="text-button">+ New</button></div><div id="chat-threads"></div></section>
         <section class="panel chat-panel">
+          <div class="panel-heading"><h3 id="chat-title">New conversation</h3><button id="delete-chat" class="text-button danger" disabled>Delete conversation</button></div>
+          <p id="chat-notice" class="filter-help" role="status" hidden></p>
           <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
           <form id="chat-form" class="chat-composer"><label for="chat-input">Message the active team</label><textarea id="chat-input" maxlength="8000" rows="3" placeholder="Give the company a task…" required></textarea><label class="learning-option"><input type="checkbox" id="chat-learn"> Use this task for reflection</label><div id="chat-error" class="error" role="alert" hidden></div><div class="composer-footer"><span>Uses Crusoe inference · recent conversation is carried forward</span><button id="chat-send" class="button" type="submit">Send ↗</button></div><p>The team can write and run Python to process data and test code. Each execution starts with fresh files; printed results are saved in the trace. Tasks marked for reflection include earlier shared task turns in this conversation; private chat is excluded. Start a new conversation for an independent task. Responses are ungraded; reflection remains manual.</p></form>
         </section>

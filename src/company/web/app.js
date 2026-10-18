@@ -9,7 +9,7 @@ const badge = (status, text = statusLabels[status] || status) => `<span class="b
 const date = value => value ? new Date(value).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"}) : "—";
 const empty = (title, text = "") => `<div class="empty"><strong>${esc(title)}</strong>${esc(text)}</div>`;
 const pre = value => `<pre>${esc(pretty(value))}</pre>`;
-let state, replay, selectedRun, selectedWorker = null, selectedProposal, currentView = "runs", refreshing = false, selectedThread, chatSubmitting = false, reflectionSubmitting = false;
+let state, replay, selectedRun, selectedWorker = null, selectedProposal, currentView = "runs", refreshing = false, selectedThread, chatSubmitting = false, reflectionSubmitting = false, chatDeleting = false;
 function companyBusy() {return state.runs.some(run => run.status === "running") || state.reflections.some(row => row.status === "running") || (state.actions || []).some(row => row.status === "running") || (state.chat_turns || []).some(row => row.status === "running");}
 function runStatus(run) {return run.status === "completed" && run.grade ? (run.grade.passed ? "pass" : "fail") : run.status;}
 async function fetchJSON(path) {const response = await fetch(path); if (!response.ok) throw new Error(`Could not read local records (${response.status}). Initialize the organization first.`); return response.json();}
@@ -125,7 +125,7 @@ function renderAttempts() {
 function renderReflectionAction() {
   const action = (state.actions || []).find(row => row.kind === "reflection");
   const running = reflectionSubmitting || action?.status === "running";
-  const hasEvidence = state.runs.some(row => row.split === "learning" && row.status === "completed" && row.version_id === state.active.version_id);
+  const hasEvidence = state.runs.some(row => row.split === "learning" && row.status === "completed" && !row.reflection_excluded && row.version_id === state.active.version_id);
   $("#run-reflection").disabled = running || companyBusy() || !hasEvidence;
   $("#run-reflection").textContent = running ? "Reflecting…" : "Run reflection ↗";
   let message = hasEvidence ? "Custom tasks: replay both versions, then let a separate LLM recommend promotion. Subjective review; no shared model-call or time budget." : "Send a task in Chat with ‘Use this task for reflection’ checked, then return here.";
@@ -155,6 +155,7 @@ function renderChat() {
   const threads = state.chat_threads || [], turns = state.chat_turns || [];
   if (selectedThread === undefined || (selectedThread && !threads.some(row => row.id === selectedThread))) selectedThread = threads[0]?.id || null;
   const active = state.active;
+  $("#chat-title").textContent = threads.find(row => row.id === selectedThread)?.title || "New conversation";
   $("#chat-active").textContent = `${active.manifest.label} · ${active.manifest.topology.roles.length} saved roles · ${active.manifest.limits.model_calls == null ? "unlimited model calls" : `${active.manifest.limits.model_calls} model calls`}`;
   $("#chat-threads").innerHTML = threads.map(thread => `<button class="proposal-card ${thread.id === selectedThread ? "selected" : ""}" data-thread="${esc(thread.id)}"><h3>${esc(thread.title)}</h3><span class="small muted">${date(thread.created_at)}</span></button>`).join("") || empty("Your first conversation", "Give the active team a task to begin.");
   document.querySelectorAll("[data-thread]").forEach(button => button.onclick = () => {selectedThread = button.dataset.thread; renderChat();});
@@ -166,9 +167,12 @@ function renderChat() {
     return `<article class="chat-message from-user"><div class="chat-message-label">You</div><div class="chat-text">${esc(turn.prompt)}</div></article><article class="chat-message from-team"><div class="chat-message-label">${esc(label)} ${turn.version_id ? `<span class="mono">${short(turn.version_id)}</span>` : ""} ${badge(turn.status, turn.status === "completed" ? "Response returned · unverified" : undefined)}</div><div class="chat-text">${esc(response)}</div>${turn.error && turn.output ? `<p>${esc(turn.error)}</p>` : ""}<div class="chat-meta">${turn.usage ? `${num((turn.usage.input_tokens || 0) + (turn.usage.output_tokens || 0))} tokens · ${num(turn.usage.model_calls)} calls` : ""}${turn.run_id ? `<button class="text-button" data-result-run="${esc(turn.run_id)}">View workers & trace ↗</button>` : ""}</div></article>`;
   }).join("") || empty("One message. The whole active team.", "Ask for a calculation, give it an order-normalization task, or request a delegated check. Open the trace to see what it actually did.");
   messages.scrollTop = atBottom ? messages.scrollHeight : oldTop;
-  const busy = companyBusy() || chatSubmitting || reflectionSubmitting;
+  const busy = companyBusy() || chatSubmitting || reflectionSubmitting || chatDeleting;
   $("#chat-send").disabled = busy;
   $("#chat-send").textContent = busy ? "Working…" : "Send ↗";
+  $("#delete-chat").disabled = !selectedThread || busy;
+  $("#delete-chat").textContent = chatDeleting ? "Deleting…" : "Delete conversation";
+  $("#delete-chat").title = busy ? "Wait for the current task or reflection to finish" : "Remove this conversation and exclude its tasks from future reflection";
   documentQueryResultButtons();
 }
 async function refresh() {
@@ -182,12 +186,29 @@ async function refresh() {
   } catch (error) {$("#error").hidden = false; $("#error").textContent = error.message;} finally {refreshing = false;}
 }
 document.querySelectorAll("[data-view]").forEach(button => button.onclick = () => {currentView = button.dataset.view; document.querySelectorAll("[data-view]").forEach(item => item.classList.toggle("selected",item === button)); for (const view of ["chat","runs","reflection","versions"]) $(`#${view}-view`).hidden = view !== currentView; $("#page-title").textContent = {chat:"Put your team to work.",runs:"Watch the work happen.",reflection:"Learning, with receipts.",versions:"Keep what works."}[currentView]; $("#page-subtitle").textContent = {chat:"A conversation with the active organization, backed by real execution.",runs:"A saved organization. Fresh workers. A trace you can inspect.",reflection:"Every proposal has evidence, a comparison, and a decision.",versions:"The exact configuration that starts the next run."}[currentView];});
-$("#new-chat").onclick = () => {selectedThread = null; renderChat(); $("#chat-input").focus();};
+$("#new-chat").onclick = () => {selectedThread = null; $("#chat-notice").hidden = true; renderChat(); $("#chat-input").focus();};
+$("#delete-chat").onclick = async () => {
+  if (!selectedThread || chatDeleting || chatSubmitting || reflectionSubmitting || companyBusy()) return;
+  const threadId = selectedThread;
+  const title = state.chat_threads.find(row => row.id === threadId)?.title || "this conversation";
+  if (!confirm(`Delete “${title}” and its run traces?\n\nRuns already used by reflection will remain as historical evidence but will be excluded from future proposals. Existing versions and lessons are kept. This cannot be undone.`)) return;
+  chatDeleting = true; $("#chat-error").hidden = true; renderChat();
+  try {
+    const response = await fetch("/api/chat/delete", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({thread_id:threadId})});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Could not delete conversation (${response.status})`);
+    if (selectedThread === threadId) selectedThread = undefined;
+    $("#chat-notice").textContent = `Conversation deleted. ${result.retained_evidence_runs ? `${result.retained_evidence_runs} run(s) kept as historical evidence and excluded from future proposals.` : "Its run traces were removed."}`;
+    $("#chat-notice").hidden = false;
+    await refresh();
+  } catch(error) {$("#chat-error").hidden = false; $("#chat-error").textContent = error.message;}
+  finally {chatDeleting = false; renderChat(); renderReflectionAction();}
+};
 $("#chat-form").onsubmit = async event => {
   event.preventDefault();
   const message = $("#chat-input").value.trim();
-  if (!message || chatSubmitting || reflectionSubmitting || companyBusy()) return;
-  chatSubmitting = true; $("#chat-error").hidden = true; renderChat();
+  if (!message || chatSubmitting || reflectionSubmitting || chatDeleting || companyBusy()) return;
+  chatSubmitting = true; $("#chat-error").hidden = true; $("#chat-notice").hidden = true; renderChat();
   try {
     const response = await fetch("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({message, thread_id:selectedThread, learn:$("#chat-learn").checked})});
     const result = await response.json();

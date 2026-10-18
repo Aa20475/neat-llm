@@ -21,8 +21,9 @@ order IDs, customer emails, or prices. Do not create a specialist just to enlarg
 or prompt correction for procedural errors. Avoid repeating changes recorded as rejected without new evidence.
 Some user tasks are ungraded (grade is null). Treat their requirements and traces as evidence, but do not
 invent test failures or claim measured improvement. User-task candidates receive a separate LLM review of fresh answers.
-If the evidence supports no useful change, return {"no_change":true,"reason":"..."}.
-Otherwise return ONLY a JSON object with title, rationale, expected_benefit, and operations (at most 3).
+If the evidence supports no useful change, use the decision {"no_change":true,"reason":"..."}.
+Otherwise return a proposal with title, rationale, expected_benefit, and operations (at most 3).
+Your response must be a JSON object with one key, decision, containing either the no_change object or the proposal.
 Supported operations:
 {"op":"replace_prompt","role":"generalist","text":"complete replacement instructions"}
 {"op":"revise_skill","role":"generalist","id":"short-slug","text":"reusable procedure"}
@@ -33,6 +34,11 @@ Supported operations:
 Use only listed tools. Do not change models, budgets, filesystem access, evaluator, or controller code.
 Python execution is disposable and stdlib-only. Its observed code/errors can justify reusable debugging,
 testing, or decomposition skills; tool output and self-written tests are evidence, not independent proof.
+Compare each task's explicit requirements with its observed tool results and independent_checks before deciding.
+An assistant's statement that all tests passed is a claim, not a grade. If a controller-recorded independent
+check contradicts that claim, acknowledge the failed property and consider a reusable prevention procedure.
+Do not conclude that all requirements passed when independent checks show otherwise. An earlier formatting
+failure in reflection memory says nothing about the quality of the task result.
 Return one candidate. The controller runs fresh paired checks: deterministic checks for benchmark tasks and subjective LLM review for user tasks.
 """
 
@@ -72,19 +78,23 @@ def learning_diagnostics(task_id: str, output: str) -> list[dict]:
 
 
 def learning_evidence(store: Store, base_version: str) -> list[dict]:
-    runs = [row for row in store.history() if row["version_id"] == base_version and row["split"] == "learning" and row["status"] == "completed"][:6]
+    runs = [row for row in store.history() if row["version_id"] == base_version and row["split"] == "learning"
+            and row["status"] == "completed" and not row["reflection_excluded"]][:6]
     evidence = []
     for row in runs:
         replay = store.replay(row["id"])
         python_events = [event for event in replay["events"]
                          if event["kind"] in ("tool_started", "tool_finished")
                          and event["payload"].get("name") == "python_execute"][-4:]
+        checks = [event for event in replay["events"] if event["kind"] == "independent_check"][-3:]
         evidence.append({"run_id": row["id"], "task_id": row["task_id"], "task": replay["run"]["prompt"][:5000],
                          "output": replay["run"]["output"], "grade": row["grade"], "usage": row["usage"],
                          "diagnostics": learning_diagnostics(row["task_id"], replay["run"]["output"]),
                          "python_trace": [{"kind": event["kind"], "worker_id": event["worker_id"],
                                            "call_id": event["payload"].get("call_id"),
                                            "excerpt": canonical_json(event["payload"])[:1000]} for event in python_events],
+                         "independent_checks": [{"source": "controller-recorded independent check",
+                                                 "excerpt": canonical_json(event["payload"])[:2500]} for event in checks],
                          "workers": [{key: worker[key] for key in ("id", "role", "temporary", "task", "status")} for worker in replay["workers"]]})
     return evidence
 
@@ -160,6 +170,34 @@ def apply_proposal(base: dict, document: dict, evidence: list[dict], label: str)
     return candidate, {**document, "changes": changes, "evidence_ids": [run["run_id"] for run in evidence]}
 
 
+def response_format(manifest, evidence):
+    """Constrain the provider response; controller validation still owns admissibility."""
+    def obj(properties):
+        return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
+    def op(name):
+        return {"type": "string", "enum": [name]}
+    text = {"type": "string"}
+    role = {"type": "string", "enum": [item["id"] for item in manifest["topology"]["roles"]]}
+    tools = {"type": "array", "items": {"type": "string", "enum": manifest["tools"]["names"]}}
+    operations = [
+        obj({"op": op("replace_prompt"), "role": role, "text": text}),
+        obj({"op": op("revise_skill"), "role": role, "id": text, "text": text}),
+        obj({"op": op("update_task_memory"), "role": role, "id": text, "text": text}),
+        obj({"op": op("bind_tools"), "role": role, "tools": tools}),
+    ]
+    worker_ids = [worker["id"] for item in evidence for worker in item["workers"] if worker["temporary"]]
+    if worker_ids:
+        operations.append(obj({"op": op("retain_role"), "id": text,
+                               "source_worker_id": {"type": "string", "enum": worker_ids},
+                               "description": text, "text": text, "tools": tools}))
+    schema = obj({"decision": {"anyOf": [
+        obj({"no_change": {"type": "boolean", "enum": [True]}, "reason": text}),
+        obj({"title": text, "rationale": text, "expected_benefit": text,
+             "operations": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"anyOf": operations}}}),
+    ]}})
+    return {"type": "json_schema", "json_schema": {"name": "reflection_decision", "strict": True, "schema": schema}}
+
+
 async def propose(store: Store, settings) -> dict:
     active = store.active()
     evidence = learning_evidence(store, active["version_id"])
@@ -169,6 +207,12 @@ async def propose(store: Store, settings) -> dict:
     reflection = store.start_reflection([run["run_id"] for run in evidence], [row["id"] for row in memories])
     usage = {"phase": "reflection", "model_calls": 0, "input_tokens": 0, "output_tokens": 0, "complete": False}
     response = None
+    attempts = []
+    usage_complete = True
+    def safe_response():
+        # Keep rejected responses useful for debugging without persisting credentials.
+        record = {**(response if isinstance(response, dict) else {}), "format_attempts": attempts}
+        return json.loads(json.dumps(record).replace(settings.api_key, "[REDACTED]"))
     started = time.monotonic()
     try:
         # Bounded context: no raw validation/held-out tasks, answer keys, secrets, or tool access.
@@ -176,23 +220,50 @@ async def propose(store: Store, settings) -> dict:
         rendered = canonical_json(context)
         if len(rendered) > 48000:
             raise ValueError("Reflection context budget exceeded")
-        usage["model_calls"] = 1
-        store.finish_reflection(reflection["id"], "running", usage)
-        model = replace(settings, max_tokens=1800).chat_model()
-        answer = await asyncio.wait_for(model.ainvoke([SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=rendered)]), timeout=60)
-        counts = answer.usage_metadata or {}
-        usage.update(input_tokens=counts.get("input_tokens", 0), output_tokens=counts.get("output_tokens", 0), complete=bool(counts))
-        raw = answer.text.strip()
-        if raw.startswith("```") and raw.endswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        response = json.loads(raw)
+        model = replace(settings, max_tokens=4096).chat_model()
+        messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=rendered)]
+        number = store.db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] + 1
+        for attempt in range(2):
+            usage["model_calls"] += 1
+            usage["complete"] = False
+            store.finish_reflection(reflection["id"], "running", usage, safe_response())
+            answer = await asyncio.wait_for(model.ainvoke(messages, response_format=response_format(active["manifest"], evidence)), timeout=60)
+            counts = answer.usage_metadata or {}
+            usage_complete &= bool(counts)
+            usage.update(input_tokens=usage["input_tokens"] + counts.get("input_tokens", 0),
+                         output_tokens=usage["output_tokens"] + counts.get("output_tokens", 0), complete=usage_complete)
+            raw = answer.text.strip()
+            if raw.startswith("```") and raw.endswith("```"):
+                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            record = {"attempt": attempt + 1, "response_excerpt": raw[:6000],
+                      "finish_reason": answer.response_metadata.get("finish_reason")}
+            attempts.append(record)
+            try:
+                response = json.loads(raw)
+                if isinstance(response, dict) and set(response) == {"decision"}:
+                    response = response["decision"]
+                if isinstance(response, dict) and response.get("no_change") is True:
+                    if not isinstance(response.get("reason"), str) or not response["reason"].strip():
+                        raise ValueError("A no-change decision requires a reason")
+                else:
+                    candidate, document = apply_proposal(active["manifest"], response, evidence, f"candidate-{number}")
+                record["status"] = "accepted"
+                break
+            except ValueError as error:
+                record.update(status="rejected", error=str(error)[:1000])
+                if attempt == 1:
+                    raise ValueError("Invalid reflection proposal after two responses: " + str(error)) from error
+                messages += [answer, HumanMessage(content=(
+                    "The controller rejected this response: " + str(error)[:1000] +
+                    '. Return {"decision": {"no_change": true, "reason": "..."}} if no useful change is justified. '
+                    'Otherwise decision must contain title, rationale, expected_benefit, and operations: a list of 1–3 supported typed operations. '
+                    'Correct the format and admissibility; do not replace the evaluator or invent tool names or worker IDs.'
+                ))]
         if isinstance(response, dict) and response.get("no_change") is True:
             reason = str(response.get("reason", "No justified change"))[:2500]
             store.remember(reflection["id"], None, "no_change", reason, {"run_ids": [run["run_id"] for run in evidence]})
             status, proposal_id = "no_change", None
         else:
-            number = store.db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] + 1
-            candidate, document = apply_proposal(active["manifest"], response, evidence, f"candidate-{number}")
             known_tasks = {case["id"] for case in load_cases("learning")}
             document["evaluation_scope"] = "orders-development" if all(
                 item["task_id"] in known_tasks and item["grade"] is not None for item in evidence
@@ -209,17 +280,17 @@ async def propose(store: Store, settings) -> dict:
                 proposal_id = store.save_proposal(reflection, candidate, document)
                 status = "proposed"
         usage["elapsed_seconds"] = round(time.monotonic() - started, 3)
-        store.finish_reflection(reflection["id"], status, usage, response)
+        store.finish_reflection(reflection["id"], status, usage, safe_response())
         return {"reflection_id": reflection["id"], "status": status, "proposal_id": proposal_id, "usage": usage,
                 "evaluation_scope": document["evaluation_scope"] if proposal_id else None,
                 "retrieved_memory_ids": [row["id"] for row in memories]}
     except asyncio.CancelledError:
-        store.finish_reflection(reflection["id"], "interrupted", usage, error="Controller interrupted")
+        store.finish_reflection(reflection["id"], "interrupted", usage, safe_response(), error="Controller interrupted")
         raise
     except Exception as error:
         # Never persist provider exception text or an unredacted raw response.
         detail = str(error).replace(settings.api_key, "[REDACTED]")[:1500]
         usage["elapsed_seconds"] = round(time.monotonic() - started, 3)
-        store.finish_reflection(reflection["id"], "failed", usage, error=detail)
+        store.finish_reflection(reflection["id"], "failed", usage, safe_response(), error=detail)
         store.remember(reflection["id"], None, "failed", "Proposal was not admissible: " + detail, {"error_type": type(error).__name__})
         return {"reflection_id": reflection["id"], "status": "failed", "error": detail, "usage": usage}

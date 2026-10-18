@@ -4,6 +4,8 @@ Status: proposed, 2026-10-17. Companion: [architecture and lifecycle](DESIGN.md)
 
 Implemented in Step 3: phase-specific usage, one proposal call per cycle, six-trace/five-lesson retrieval bounds, a 48,000-character reflection context cap, a shared 24-call evaluation budget, deterministic structural checks, early rejection, and behavioral duplicate detection before evaluation. Three live reflection attempts consumed 12,580 tokens; their comparisons consumed 22,519 tokens. The third duplicate incurred a proposal call but no evaluation. Dollar admission control, automatic batching, exact cache reuse, and model selection remain planned. See [results](STEP3_RESULTS.md).
 
+Current demo settings: the user removed aggregate execution and evaluation budgets. Reflection requests structured JSON with up to 4,096 output tokens and permits one corrective retry after a format or admissibility error; both calls are charged to its usage record. Initial evidence remains bounded. Reintroducing aggregate budgets is an operator choice, not an automatic consequence of this optimization plan.
+
 The prototype may incur substantial reflection overhead while we establish that the learning loop works. Measure that overhead from the first run, keep it within an explicit budget, and optimize using the recorded results. Advanced experiment selection is not required for the first prototype. Lower cost must not become an excuse to activate an untested proposal.
 
 V0 is one capable generalist that spawns temporary subagents as needed. Improvements should reuse useful work the generalist already performs. A permanent specialist means a saved role definition; it is invoked only when relevant. Keeping the single-generalist layout is a valid outcome.

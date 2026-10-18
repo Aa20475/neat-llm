@@ -36,7 +36,7 @@ def test_independent_review_promotes_only_preferred_candidate(tmp_path, monkeypa
         seen.append(row["id"])
         return store.replay(row["id"])
     class Judge:
-        async def ainvoke(self, messages):
+        async def ainvoke(self, messages, **kwargs):
             context = json.loads(messages[1].content)
             assert set(context) == {"task", "answers"} and set(context["answers"]) == {"A", "B"}
             assert "INTERNAL_PROPOSAL_RATIONALE" not in messages[1].content
@@ -66,7 +66,7 @@ def test_ungraded_user_task_gets_user_task_evaluation_scope(tmp_path, monkeypatc
     task = store.start_run("task-user", "learning", "Write a three-step plan")
     store.finish(task["id"], "completed", "A plan", None, {})
     class Model:
-        async def ainvoke(self, messages):
+        async def ainvoke(self, messages, **kwargs):
             assert json.loads(messages[1].content)["learning_evidence"][0]["grade"] is None
             return AIMessage(content=json.dumps({"title": "Check constraints", "rationale": "Better formatting", "expected_benefit": "Follow the requested structure",
                 "operations": [{"op": "revise_skill", "role": "generalist", "id": "constraints", "text": "Check explicit output constraints before responding."}]}),

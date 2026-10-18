@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage
 
 from company.config import Settings
 from company.organization import initial_manifest, worker_files
-from company.reflection import apply_proposal, learning_diagnostics, learning_evidence, propose
+from company.reflection import apply_proposal, learning_diagnostics, learning_evidence, propose, response_format
 from company.runtime import build_agent
 from company.store import Store
 from company.validation import EvaluationBudget, decide, evaluate
@@ -42,6 +42,7 @@ def test_reflection_sees_bounded_python_attempts_from_learning_only(company):
     for split in ("learning", "review"):
         run = store.start_run(split, split, "Write a parser")
         for i in range(6):
+            store.event(run["id"], "independent_check", None, {"finding": f"{split}-{i} " + "x" * 10000})
             store.event(run["id"], "tool_started", run["id"] + ":root", {
                 "name": "python_execute", "call_id": str(i), "arguments": {"code": "assert False"},
             })
@@ -56,6 +57,68 @@ def test_reflection_sees_bounded_python_attempts_from_learning_only(company):
     assert {event["call_id"] for event in attempts} == {"4", "5"}
     assert all(len(event["excerpt"]) <= 1000 for event in attempts)
     assert "AssertionError" in attempts[-1]["excerpt"]
+    checks = evidence[0]["independent_checks"]
+    assert len(checks) == 3 and all(len(check["excerpt"]) <= 2500 for check in checks)
+    assert "learning-3" in checks[0]["excerpt"] and "review" not in str(checks)
+
+
+@pytest.mark.parametrize("second", ["proposal", "no_change", "invalid", "provider_error"])
+def test_reflection_repairs_one_malformed_response_and_retains_diagnostics(company, monkeypatch, second):
+    store, settings = company
+    original = store.active()
+    run = store.start_run("task-user", "learning", "Implement and test a parser")
+    store.finish(run["id"], "completed", "I implemented it", None, {})
+    document = {"title": "Check edge cases", "rationale": "Self-tests missed invalid inputs",
+                "expected_benefit": "Catch unchecked input constraints",
+                "operations": [{"op": "revise_skill", "role": "generalist", "id": "edge-tests",
+                                "text": "Check invalid inputs and compare output against explicit requirements."}]}
+    calls = []
+    class Model:
+        async def ainvoke(self, messages, **kwargs):
+            calls.append(list(messages))
+            assert kwargs["response_format"]["type"] == "json_schema"
+            if len(calls) == 1:
+                # Regression: syntactically valid JSON without typed operations.
+                content = json.dumps({"title": "Missing operations", "rationale": settings.api_key})
+            else:
+                assert "one to three typed operations" in messages[-1].content
+                if second == "provider_error":
+                    raise RuntimeError("Provider rejected " + settings.api_key)
+                content = json.dumps({"decision": document if second == "proposal" else
+                                     {"no_change": True, "reason": "Insufficient evidence"} if second == "no_change" else
+                                     {"operations": []}})
+            return AIMessage(content=content, usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
+    monkeypatch.setattr(Settings, "chat_model", lambda self: Model())
+    result = asyncio.run(propose(store, settings))
+    assert result["status"] == {"proposal": "proposed", "no_change": "no_change"}.get(second, "failed")
+    assert len(calls) == 2 and store.active() == original
+    assert result["usage"]["model_calls"] == 2
+    assert result["usage"]["input_tokens"] == (10 if second == "provider_error" else 20)
+    assert result["usage"]["output_tokens"] == (5 if second == "provider_error" else 10)
+    assert result["usage"]["complete"] == (second != "provider_error")
+    saved = dict(store.db.execute("SELECT * FROM reflections WHERE id=?", (result["reflection_id"],)).fetchone())
+    assert settings.api_key not in str(saved) and "[REDACTED]" in saved["response"]
+    attempts = json.loads(saved["response"])["format_attempts"]
+    assert attempts[0]["status"] == "rejected" and "operations" in attempts[0]["error"]
+    if second != "provider_error":
+        assert attempts[1]["status"] == ("rejected" if second == "invalid" else "accepted")
+    assert store.db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] == (1 if second == "proposal" else 0)
+
+
+def test_structured_proposal_can_only_reference_existing_roles_tools_and_observed_workers(company):
+    store, _ = company
+    manifest = store.active()["manifest"]
+    evidence = [{"workers": [{"id": "temp-worker", "temporary": True}, {"id": "root", "temporary": False}]}]
+    schema = response_format(manifest, evidence)["json_schema"]["schema"]
+    choices = schema["properties"]["decision"]["anyOf"]
+    operations = choices[1]["properties"]["operations"]
+    assert operations["minItems"] == 1 and operations["maxItems"] == 3
+    variants = {item["properties"]["op"]["enum"][0]: item["properties"] for item in operations["items"]["anyOf"]}
+    assert variants["retain_role"]["source_worker_id"]["enum"] == ["temp-worker"]
+    assert variants["replace_prompt"]["role"]["enum"] == ["generalist"]
+    assert variants["bind_tools"]["tools"]["items"]["enum"] == manifest["tools"]["names"]
+    without_workers = response_format(manifest, [])["json_schema"]["schema"]
+    assert "retain_role" not in str(without_workers)
 
 
 def test_candidate_isolation_atomic_activation_and_stale_generation(company):
@@ -161,7 +224,7 @@ def test_next_reflection_retrieves_lessons_without_validation_answers(company, m
     reflection = store.start_reflection([], [])
     store.remember(reflection["id"], None, "rejected", "Repeating the old prompt did not help", {"case_count": 4})
     class Model:
-        async def ainvoke(self, messages):
+        async def ainvoke(self, messages, **kwargs):
             context = json.loads(messages[1].content)
             assert len(context["reflection_memory"]) == 1
             assert "PRIVATE_HELDOUT" not in messages[1].content
@@ -202,7 +265,7 @@ def test_duplicate_proposal_skips_paid_evaluation_and_remembers_why(company, mon
     run = store.start_run("learning-evidence", "learning", "public input")
     store.finish(run["id"], "completed", "[]", {"passed": False}, {})
     class Model:
-        async def ainvoke(self, messages):
+        async def ainvoke(self, messages, **kwargs):
             return AIMessage(content=json.dumps({key: value for key, value in row["document"].items() if key != "changes"}),
                              usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
     monkeypatch.setattr(Settings, "chat_model", lambda self: Model())

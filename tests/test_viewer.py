@@ -29,17 +29,18 @@ def test_viewer_reads_complete_history_without_exposing_credentials(tmp_path):
     (None, "127.0.0.1:8765", 403),
     ("http://unrelated.example:8765", "unrelated.example:8765", 403),
 ])
-@pytest.mark.parametrize("endpoint", ["/api/chat", "/api/reflect"])
+@pytest.mark.parametrize("endpoint", ["/api/chat", "/api/reflect", "/api/chat/delete"])
 def test_only_same_origin_local_actions_can_start_inference(tmp_path, monkeypatch, origin, host, expected, endpoint):
     calls = []
     def submit(self, payload):
         calls.append(payload)
         return {"id": "turn", "thread_id": "thread"}
     monkeypatch.setattr("company.viewer.ChatService.submit", submit)
+    monkeypatch.setattr("company.viewer.ChatService.delete", submit)
     monkeypatch.setattr("company.viewer.ReflectionService.submit", lambda self: submit(self, {}))
     handler = handler_for(tmp_path / "company.sqlite3")
     request = handler.__new__(handler)
-    payload = json.dumps({"message": "Hello"} if endpoint == "/api/chat" else {}).encode()
+    payload = json.dumps({"message": "Hello"} if endpoint == "/api/chat" else {"thread_id": "a" * 32} if endpoint == "/api/chat/delete" else {}).encode()
     request.server = SimpleNamespace(server_port=8765)
     request.path = endpoint
     request.headers = {"Host": host, "Content-Type": "application/json", "Content-Length": str(len(payload))}
@@ -52,5 +53,5 @@ def test_only_same_origin_local_actions_can_start_inference(tmp_path, monkeypatc
     request.send_header = lambda *args: None
     request.end_headers = lambda: None
     request.do_POST()
-    assert statuses == [expected]
+    assert statuses == [200 if endpoint == "/api/chat/delete" and expected == 202 else expected]
     assert len(calls) == (1 if expected == 202 else 0)
